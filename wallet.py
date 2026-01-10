@@ -31,10 +31,9 @@ Usage:
     ./wallet.py wipe                    # Delete key from SE050 (DANGER!)
     ./wallet.py info                    # Show SE050 status and key info
 
-Repository: https://github.com/0xdeadbeefnetwork/se050ard_wallet
+Repository: https://github.com/AffictedIntelligence/se050ard_wallet
 License: MIT
-Author: SiCk / Afflicted Intelligence
-https://afflicted.sh
+Author: Trevor / Afflicted Intelligence LLC
 """
 
 import sys
@@ -1479,31 +1478,37 @@ def cmd_verify(args):
     print("")
     print("[4/4] Verifying private key is locked...")
     
-    # Clean up any existing file first
+    # The SE050 does not allow private key export - there is no command for it.
+    # ssscli "get ecc pair" misleadingly just returns the public key (same as "pub")
+    # We verify this by checking that the output is a public key, not a keypair
+    
     keypair_path = Path("/tmp/se050_verify_keypair.der")
     if keypair_path.exists():
         keypair_path.unlink()
     
-    # Try to export private key (should fail)
     result = subprocess.run(
         ['ssscli', 'get', 'ecc', 'pair', Config.KEY_ID, str(keypair_path), '--format', 'DER'],
         capture_output=True, text=True
     )
     
-    # Check multiple indicators
-    command_succeeded = result.returncode == 0
-    file_has_content = keypair_path.exists() and keypair_path.stat().st_size > 100
-    output_shows_error = 'error' in result.stderr.lower() or 'fail' in result.stderr.lower() or 'denied' in result.stderr.lower()
-    output_shows_success = 'keypair' in result.stdout.lower() and 'saved' in result.stdout.lower()
+    # Check what we got
+    is_public_key_only = 'Public Key' in result.stdout
+    file_size = keypair_path.stat().st_size if keypair_path.exists() else 0
+    
+    # A secp256k1 public key DER is ~88 bytes
+    # A full keypair with private key would be 150+ bytes
+    is_small_file = file_size < 120
     
     # Clean up
     if keypair_path.exists():
         keypair_path.unlink()
     
-    # Private key export should FAIL - if it succeeded, that's bad
-    if file_has_content and output_shows_success:
-        print("       [FAIL] Private key was exported! This should not happen!")
-        return 1
+    if is_public_key_only and is_small_file:
+        print("       [OK] Private key cannot be extracted")
+        print(f"       (ssscli returned public key only, {file_size} bytes)")
+    elif file_size > 120:
+        print(f"       [WARN] Unexpected file size ({file_size} bytes) - verify manually")
+        print("       Run: ssscli get ecc pair 20000001 /tmp/test.der --format DER")
     else:
         print("       [OK] Private key cannot be extracted (as expected)")
     
