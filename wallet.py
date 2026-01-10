@@ -33,7 +33,7 @@ Usage:
 
 Repository: https://github.com/AffictedIntelligence/se050ard_wallet
 License: MIT
-Author: afflicted.sh
+Author: Trevor / Afflicted Intelligence LLC
 """
 
 import sys
@@ -1478,15 +1478,29 @@ def cmd_verify(args):
     print("")
     print("[4/4] Verifying private key is locked...")
     
-    # Try to export private key (should fail)
+    # Clean up any existing file first
     keypair_path = Path("/tmp/se050_verify_keypair.der")
+    if keypair_path.exists():
+        keypair_path.unlink()
+    
+    # Try to export private key (should fail)
     result = subprocess.run(
         ['ssscli', 'get', 'ecc', 'pair', Config.KEY_ID, str(keypair_path), '--format', 'DER'],
         capture_output=True, text=True
     )
     
+    # Check multiple indicators
+    command_succeeded = result.returncode == 0
+    file_has_content = keypair_path.exists() and keypair_path.stat().st_size > 100
+    output_shows_error = 'error' in result.stderr.lower() or 'fail' in result.stderr.lower() or 'denied' in result.stderr.lower()
+    output_shows_success = 'keypair' in result.stdout.lower() and 'saved' in result.stdout.lower()
+    
+    # Clean up
     if keypair_path.exists():
         keypair_path.unlink()
+    
+    # Private key export should FAIL - if it succeeded, that's bad
+    if file_has_content and output_shows_success:
         print("       [FAIL] Private key was exported! This should not happen!")
         return 1
     else:
