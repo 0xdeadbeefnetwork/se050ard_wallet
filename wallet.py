@@ -33,7 +33,8 @@ Usage:
 
 Repository: https://github.com/AffictedIntelligence/se050ard_wallet
 License: MIT
-Author: _SiCk / Afflicted Intelligence
+Author: afflicted.sh / Afflicted Intelligence 
+_SiCk
 """
 
 import sys
