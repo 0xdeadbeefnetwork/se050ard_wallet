@@ -601,15 +601,12 @@ MIT
 
 ## Author
 
-Trevor / Afflicted Intelligence LLC
+SiCk / Afflicted Intelligence - https://afflicted.sh
 
 ## Repository
 
-https://github.com/AffictedIntelligence/se050ard_wallet
+https://github.com/0xdeadbeefnetwork/se050ard_wallet
 
-## Contributing
-
-Issues and PRs welcome. This is experimental software - use at your own risk.
 
 ## Disclaimer
 
