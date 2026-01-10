@@ -237,15 +237,42 @@ IMPORTANT:
 
 ```bash
 ./wallet.py address
+
+# With QR code for easy mobile scanning
+./wallet.py address --qr
+```
+
+The QR code displays in ASCII art in your terminal. Install `qrcode` for best results:
+```bash
+pip3 install qrcode --break-system-packages
 ```
 
 ### Check Balance
 
 ```bash
 ./wallet.py balance
+
+# With fiat conversion (USD, EUR, GBP, etc.)
+./wallet.py balance --fiat usd
 ```
 
-Uses mempool.space API to check both Legacy and SegWit addresses. Also displays current network fee estimates.
+Output:
+```
+  SegWit:      50,000 sats  (1 UTXOs)
+          bc1q6rgrvq509s3l9vpklgzk08nctqymg4977phlde
+  Legacy:           0 sats
+          1L36yesgc38k8nbkTvp3wk2i6qEG3bPGWm
+
+  ----------------------------------------
+  TOTAL:       50,000 sats (0.00050000 BTC)
+          ≈ 48.50 USD @ 97,000/USD
+          1 spendable UTXOs
+
+  Current fees: 15 sat/vB (fast), 5 sat/vB (slow)
+  BTC Price: 97,000 USD
+```
+
+Uses mempool.space API for balance and fees, coingecko for fiat prices.
 
 ### Send Bitcoin
 
@@ -278,6 +305,72 @@ Use different key slots:
 ./wallet.py --keyid 20000002 init
 ./wallet.py --keyid 20000002 address
 ```
+
+### Sign a Message
+
+Prove you own an address by signing a message:
+
+```bash
+./wallet.py sign-message "I own this address - 2025-01-10"
+```
+
+Output:
+```
+============================================================
+BITCOIN SIGNED MESSAGE
+============================================================
+
+Message:  I own this address - 2025-01-10
+Address:  bc1q6rgrvq509s3l9vpklgzk08nctqymg4977phlde
+
+Connecting to SE050...
+[OK] Connected
+
+Signing with SE050...
+[OK] Message signed
+
+============================================================
+SIGNATURE:
+============================================================
+
+H7x1y2z3...base64...==
+
+============================================================
+
+To verify, use: https://www.verifybitcoinmessage.com/
+```
+
+### Transaction History
+
+View recent transactions:
+
+```bash
+./wallet.py history
+./wallet.py history -n 20  # Show last 20 transactions
+```
+
+Output:
+```
+  ✓ 2025-01-09 21:15  ← RECV  +50,000 sats
+    fb2eca44409e391b...deec
+
+  ✓ 2025-01-08 14:30  → SEND  -10,000 sats
+    a1b2c3d4e5f6g7h8...ijkl
+```
+
+### Verify SE050
+
+Confirm the SE050 hardware is really being used:
+
+```bash
+./wallet.py verify
+```
+
+This checks:
+1. SE050 is connected and responding
+2. Public key matches what's stored on SE050
+3. Signatures are generated on-chip
+4. Private key cannot be extracted
 
 ### Export Public Key
 
@@ -576,7 +669,12 @@ Future improvements could include:
 | P2PKH (Legacy) | ✅ Working |
 | Mainnet | ✅ Working |
 | Testnet4 | ✅ Tested |
-| Fee estimation | ✅ Basic |
+| Fee estimation | ✅ Working |
+| Fiat price conversion | ✅ Working |
+| QR code display | ✅ Working |
+| Message signing | ✅ Working |
+| Transaction history | ✅ Working |
+| SE050 verification | ✅ Working |
 | Multiple wallets | ✅ Via --keyid |
 | BIP-62 low-S signatures | ✅ Normalized |
 | Transaction broadcast | ✅ Via mempool.space |
@@ -584,14 +682,20 @@ Future improvements could include:
 | Multisig | ❌ Not implemented |
 | RBF | ❌ Not implemented |
 | Hardware PIN/auth | ❌ Not implemented |
+| Watch-only export | 🔜 Coming soon |
 
 ---
 
 ## Dependencies
 
+**Required:**
 - Python 3.7+
 - ssscli (NXP Plug & Trust Middleware)
-- No other Python packages required (uses stdlib only)
+
+**Optional (for extra features):**
+- `qrcode` - Better QR code display (`pip3 install qrcode --break-system-packages`)
+
+No other Python packages required - uses stdlib only for core functionality.
 
 ---
 
@@ -601,12 +705,16 @@ MIT
 
 ## Author
 
-SiCk / Afflicted Intelligence - https://afflicted.sh
+_SiCk / Afflicted Intelligence 
+https://afflicted.sh
 
 ## Repository
 
-https://github.com/0xdeadbeefnetwork/se050ard_wallet
+https://github.com/AffictedIntelligence/se050ard_wallet
 
+## Contributing
+
+Issues and PRs welcome. This is experimental software - use at your own risk.
 
 ## Disclaimer
 
