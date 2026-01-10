@@ -31,10 +31,10 @@ Usage:
     ./wallet.py wipe                    # Delete key from SE050 (DANGER!)
     ./wallet.py info                    # Show SE050 status and key info
 
-Repository: https://github.com/AffictedIntelligence/se050ard_wallet
+Repository: https://github.com/0xdeadbeefnetwork/se050ard_wallet
 License: MIT
 Author: SiCk / Afflicted Intelligence
-afflicted.sh
+https://afflicted.sh
 """
 
 import sys
