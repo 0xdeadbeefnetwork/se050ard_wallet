@@ -173,7 +173,7 @@ ssscli --help
 
 ```bash
 # Open session (do this once, stays open)
-ssscli connect se05x t1oi2c none
+ssscli connect se05x vcom /dev/ttyACM0
 
 # Verify connection
 ssscli se05x uid
@@ -185,7 +185,7 @@ ssscli se05x getrng
 
 # If you see "Session already open", close it first:
 ssscli disconnect
-ssscli connect se05x t1oi2c none
+ssscli connect se05x vcom /dev/ttyACM0
 ```
 
 ### 4. Install Wallet
@@ -462,7 +462,7 @@ Don't trust - verify! Here's how to confirm the SE050 hardware is actually being
 
 ```bash
 # Export fresh copy from SE050
-ssscli connect se05x t1oi2c none
+ssscli connect se05x vcom /dev/ttyACM0
 ssscli get ecc pub 20000001 /tmp/verify_pubkey.der --format DER
 
 # Compare with wallet's stored copy
@@ -598,7 +598,7 @@ python3 -m ssscli --help
 
 ```bash
 ssscli disconnect
-ssscli connect se05x t1oi2c none
+ssscli connect se05x vcom /dev/ttyACM0
 ```
 
 ### "Key generation failed"
@@ -784,7 +784,7 @@ _SiCk @ afflicted.sh
 
 ## Repository
 
-https://github.com/0xdeadbeefnetwork/se050ard_wallet
+https://github.com/AffictedIntelligence/se050ard_wallet
 
 ## Contributing
 

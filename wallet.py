@@ -20,7 +20,7 @@ Setup:
     1. Connect SE050ARD to K64F via Arduino headers
     2. Connect K64F to Pi via USB
     3. Install ssscli (see NXP AN13027)
-    4. Run: ssscli connect se05x t1oi2c none
+    4. Run: ssscli connect se05x vcom /dev/ttyACM0
 
 Usage:
     ./wallet.py init                    # Create new wallet (generates key on SE050)
@@ -113,6 +113,31 @@ class Config:
     
     # Fee rate in sat/vbyte
     DEFAULT_FEE_RATE = 10
+    
+    # SE050 Connection settings
+    # Connection type: "vcom" for USB serial, "t1oi2c" for I2C
+    CONNECTION_TYPE = "vcom"
+    # Port: Auto-detect if None, or specify e.g. "/dev/ttyACM0"
+    CONNECTION_PORT = None
+    
+    @classmethod
+    def get_connection_port(cls) -> str:
+        """Get SE050 connection port, auto-detecting if needed"""
+        if cls.CONNECTION_PORT:
+            return cls.CONNECTION_PORT
+        
+        # Auto-detect ttyACM device
+        import glob
+        devices = glob.glob('/dev/ttyACM*')
+        if devices:
+            return devices[0]
+        
+        # Try ttyUSB as fallback
+        devices = glob.glob('/dev/ttyUSB*')
+        if devices:
+            return devices[0]
+        
+        return "none"
     
     @classmethod
     def pubkey_der_path(cls) -> Path:
@@ -430,14 +455,94 @@ def se050_check_connection() -> bool:
     except FileNotFoundError:
         return False
 
-def se050_connect() -> bool:
-    """Establish connection to SE050"""
+def se050_connect(retries: int = 3, debug: bool = False) -> bool:
+    """Establish connection to SE050 with verification"""
+    import time
+    
+    port = Config.get_connection_port()
+    conn_type = Config.CONNECTION_TYPE
+    
+    for attempt in range(retries):
+        try:
+            # First check if already connected by trying UID
+            verify = subprocess.run(
+                ['ssscli', 'se05x', 'uid'],
+                capture_output=True, text=True, timeout=10
+            )
+            if debug:
+                print(f"  [DEBUG] UID check: rc={verify.returncode}")
+                print(f"  [DEBUG] stdout ({len(verify.stdout)}): {repr(verify.stdout[:100])}")
+                print(f"  [DEBUG] stderr ({len(verify.stderr)}): {repr(verify.stderr[:100])}")
+            
+            # Check both stdout and stderr for uid pattern (hex or text)
+            combined = (verify.stdout + verify.stderr).lower()
+            has_uid = 'uid' in combined or (verify.returncode == 0 and len(verify.stdout.strip()) >= 32)
+            
+            if debug:
+                print(f"  [DEBUG] has_uid={has_uid}, rc={verify.returncode}")
+            
+            if verify.returncode == 0 and has_uid:
+                return True
+            
+            # Not connected, try to connect
+            if debug:
+                print(f"  [DEBUG] Connecting: ssscli connect se05x {conn_type} {port}")
+            result = subprocess.run(
+                ['ssscli', 'connect', 'se05x', conn_type, port],
+                capture_output=True, text=True, timeout=15
+            )
+            if debug:
+                print(f"  [DEBUG] Connect: rc={result.returncode}")
+                if result.stderr:
+                    print(f"  [DEBUG] stderr: {result.stderr[:100]}")
+            
+            # Give it a moment to establish
+            time.sleep(0.5)
+            
+            # Verify connection
+            verify = subprocess.run(
+                ['ssscli', 'se05x', 'uid'],
+                capture_output=True, text=True, timeout=10
+            )
+            if debug:
+                print(f"  [DEBUG] Verify: rc={verify.returncode}")
+                print(f"  [DEBUG] stdout ({len(verify.stdout)}): {repr(verify.stdout[:100])}")
+                print(f"  [DEBUG] stderr ({len(verify.stderr)}): {repr(verify.stderr[:100])}")
+            
+            combined = (verify.stdout + verify.stderr).lower()
+            has_uid = 'uid' in combined or (verify.returncode == 0 and len(verify.stdout.strip()) >= 32)
+            
+            if debug:
+                print(f"  [DEBUG] has_uid={has_uid}")
+            
+            if verify.returncode == 0 and has_uid:
+                return True
+            
+            # If verify failed, try disconnecting and reconnecting
+            if attempt < retries - 1:
+                subprocess.run(['ssscli', 'disconnect'], capture_output=True, timeout=5)
+                time.sleep(0.5)
+                
+        except Exception as e:
+            if debug or attempt == retries - 1:
+                print(f"Connection error: {e}")
+            time.sleep(0.5)
+    
+    return False
+
+def se050_disconnect():
+    """Disconnect from SE050"""
     try:
-        result = run_ssscli(['connect', 'se05x', 't1oi2c', 'None'], check=False)
-        return result.returncode == 0 or 'already open' in result.stdout.lower()
-    except Exception as e:
-        print(f"Connection error: {e}")
-        return False
+        subprocess.run(['ssscli', 'disconnect'], capture_output=True, timeout=5)
+    except:
+        pass
+
+def se050_reconnect() -> bool:
+    """Force disconnect and reconnect"""
+    se050_disconnect()
+    import time
+    time.sleep(0.5)
+    return se050_connect()
 
 def se050_get_uid() -> Optional[str]:
     """Get SE050 unique identifier"""
@@ -896,7 +1001,15 @@ def cmd_init(args):
     print("")
     print("[1/4] Connecting to SE050...")
     if not se050_connect():
-        print("      [FAIL] Failed to connect. Check hardware connections.")
+        print("      [FAIL] Failed to connect to SE050")
+        print("")
+        print("      Troubleshooting:")
+        print("      1. Unplug and replug USB cable to K64F")
+        print("      2. Press reset button on K64F board")
+        print("      3. Check SE050ARD is properly seated")
+        print("      4. Verify: ls /dev/ttyACM*")
+        print("      5. Test manually: ssscli connect se05x vcom /dev/ttyACM0")
+        print("                        ssscli se05x uid")
         return 1
     print("      [OK] Connected")
     
@@ -1301,6 +1414,38 @@ def cmd_wipe(args):
     print("")
     return 0
 
+def cmd_reset(args):
+    """Reset SE050 connection"""
+    port = Config.get_connection_port()
+    
+    print("")
+    print(f"Connection: {Config.CONNECTION_TYPE} @ {port}")
+    print("")
+    print("Disconnecting...")
+    se050_disconnect()
+    
+    import time
+    time.sleep(1)
+    
+    print("Reconnecting...")
+    if se050_connect():
+        print("[OK] Reconnected successfully")
+        uid = se050_get_uid()
+        if uid:
+            print(f"UID: {uid}")
+        rng = se050_get_random()
+        if rng:
+            print(f"TRNG: {rng.hex()}")
+        return 0
+    else:
+        print("[FAIL] Reconnection failed")
+        print("")
+        print("Try:")
+        print("  1. Unplug and replug USB cable")
+        print("  2. Press reset button on K64F")
+        print(f"  3. Manually: ssscli connect se05x vcom {port}")
+        return 1
+
 def cmd_info(args):
     """Show SE050 and wallet status"""
     print("")
@@ -1315,6 +1460,10 @@ def cmd_info(args):
     print("")
     print("[OK] ssscli found")
     
+    port = Config.get_connection_port()
+    print(f"")
+    print(f"Connection: {Config.CONNECTION_TYPE} @ {port}")
+    
     print("")
     print("Connecting to SE050...")
     if not se050_connect():
@@ -1322,6 +1471,8 @@ def cmd_info(args):
         print("       - K64F connected via USB")
         print("       - SE050ARD attached to K64F")
         print("       - Correct /dev/ttyACM* device")
+        print(f"")
+        print(f"       Try: ssscli connect se05x vcom {port}")
         return 1
     print("[OK] Connected")
     
@@ -1702,6 +1853,7 @@ Examples:
   %(prog)s export                      Export public key info
   %(prog)s wipe                        Delete wallet (DANGER!)
   %(prog)s info                        Show SE050 status
+  %(prog)s reset                       Reset SE050 connection
         """
     )
     
@@ -1751,6 +1903,7 @@ Examples:
     
     # info
     subparsers.add_parser('info', help='Show SE050 status')
+    subparsers.add_parser('reset', help='Reset SE050 connection')
     
     args = parser.parse_args()
     
@@ -1771,6 +1924,7 @@ Examples:
         'export': cmd_export,
         'wipe': cmd_wipe,
         'info': cmd_info,
+        'reset': cmd_reset,
     }
     
     if args.command in commands:
