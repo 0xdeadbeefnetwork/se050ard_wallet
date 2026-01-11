@@ -200,7 +200,30 @@ chmod +x wallet.py
 
 ## Usage
 
-### Initialize Wallet
+### GUI Mode (over VNC)
+
+```bash
+./wallet_gui.py
+./wallet_gui.py --testnet
+```
+
+The GUI provides:
+- Balance display with USD conversion
+- QR code for receiving
+- One-click copy addresses
+- Send dialog with fee estimation
+- Message signing
+- Transaction history
+- **Balance monitoring with notifications**
+- SE050 verification
+
+Requires: `pip3 install qrcode pillow --break-system-packages` for QR display.
+
+![GUI Screenshot](screenshot.png)
+
+### CLI Mode
+
+#### Initialize Wallet
 
 ```bash
 ./wallet.py init
@@ -277,14 +300,25 @@ Uses mempool.space API for balance and fees, coingecko for fiat prices.
 ### Send Bitcoin
 
 ```bash
-# Send 10000 sats with default fee (10 sat/vB)
+# Send by satoshis (default)
 ./wallet.py send bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh 10000
 
+# Send by BTC
+./wallet.py send bc1q... 0.0001btc
+
+# Send by USD (auto-converts at current price)
+./wallet.py send bc1q... 50usd
+./wallet.py send bc1q... $50
+
+# Send by EUR or GBP
+./wallet.py send bc1q... 50eur
+./wallet.py send bc1q... 50gbp
+
 # Specify fee rate
-./wallet.py send bc1q... 50000 --fee 5
+./wallet.py send bc1q... 50usd --fee 5
 
 # Skip confirmation prompt
-./wallet.py send bc1q... 50000 --yes
+./wallet.py send bc1q... 10000 --yes
 ```
 
 The signing happens entirely on the SE050 - the sighash goes in, a DER signature comes out. Private key never touches the Pi.
@@ -372,6 +406,36 @@ This checks:
 3. Signatures are generated on-chip
 4. Private key cannot be extracted
 
+### Watch for Incoming Coins
+
+Monitor your wallet for incoming transactions:
+
+```bash
+# Watch with 30 second interval (default)
+./wallet.py watch
+
+# Watch with custom interval
+./wallet.py watch -i 60
+```
+
+Output:
+```
+============================================================
+WATCHING FOR TRANSACTIONS
+============================================================
+
+SegWit: bc1q6rgrvq509s3l9vpklgzk08nctqymg4977phlde
+Legacy: 1L36yesgc38k8nbkTvp3wk2i6qEG3bPGWm
+
+Checking every 30 seconds. Press Ctrl+C to stop.
+
+[21:15:30] Current balance: 50,000 sats
+[21:16:00] No change. Balance: 50,000 sats
+[21:16:30] 💰 RECEIVED +10,000 sats! New balance: 60,000 sats
+```
+
+Sends desktop notification (via `notify-send`) when coins arrive.
+
 ### Export Public Key
 
 ```bash
@@ -456,11 +520,19 @@ openssl pkeyutl -verify \
 ### 5. Confirm Key Cannot Be Extracted
 
 ```bash
-# Try to get private key (should fail)
+# Try to get "keypair" - but SE050 only returns public key!
 ssscli get ecc pair 20000001 /tmp/keypair.der --format DER
-# Error: Operation not permitted / Access denied
 
-# This proves the private key is locked inside the SE050
+# Check what we got:
+ls -la /tmp/keypair.der
+# Output: 88 bytes (that's a public key, NOT a keypair)
+
+xxd /tmp/keypair.der | head -3
+# Shows: 3056 3010... (SubjectPublicKeyInfo structure = public key only)
+
+# The SE050 has NO command to export private keys.
+# The "pair" command is misleading - it just returns the public key.
+# This is hardware-enforced security: the private key literally cannot leave the chip.
 ```
 
 ---
@@ -671,13 +743,16 @@ Future improvements could include:
 | Testnet4 | ✅ Tested |
 | Fee estimation | ✅ Working |
 | Fiat price conversion | ✅ Working |
+| Send in BTC/USD/EUR/GBP | ✅ Working |
 | QR code display | ✅ Working |
 | Message signing | ✅ Working |
 | Transaction history | ✅ Working |
+| **Balance monitoring** | ✅ **NEW** |
 | SE050 verification | ✅ Working |
 | Multiple wallets | ✅ Via --keyid |
 | BIP-62 low-S signatures | ✅ Normalized |
 | Transaction broadcast | ✅ Via mempool.space |
+| Tkinter GUI | ✅ Working |
 | P2SH-P2WPKH (Wrapped SegWit) | ❌ Not implemented |
 | Multisig | ❌ Not implemented |
 | RBF | ❌ Not implemented |
@@ -705,12 +780,11 @@ MIT
 
 ## Author
 
-_SiCk / Afflicted Intelligence 
-https://afflicted.sh
+_SiCk @ afflicted.sh
 
 ## Repository
 
-https://github.com/0xdeadbeefnetwork/se050ard_wallet
+https://github.com/AffictedIntelligence/se050ard_wallet
 
 ## Contributing
 

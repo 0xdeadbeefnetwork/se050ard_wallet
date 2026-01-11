@@ -33,8 +33,7 @@ Usage:
 
 Repository: https://github.com/AffictedIntelligence/se050ard_wallet
 License: MIT
-Author: afflicted.sh / Afflicted Intelligence 
-_SiCk
+Author: _SiCk @ afflicted.sh
 """
 
 import sys
@@ -609,6 +608,81 @@ def get_btc_price(currency: str = 'USD') -> Optional[float]:
     except:
         return None
 
+def parse_amount(amount_str: str) -> Tuple[int, str]:
+    """
+    Parse amount string with optional unit suffix.
+    
+    Supports:
+        10000       -> 10000 sats
+        10000sat    -> 10000 sats  
+        10000sats   -> 10000 sats
+        0.0001btc   -> sats equivalent
+        0.0001BTC   -> sats equivalent
+        50usd       -> sats equivalent (fetches price)
+        50USD       -> sats equivalent
+        $50         -> sats equivalent
+        
+    Returns: (satoshis, description)
+    """
+    amount_str = amount_str.strip()
+    
+    # Handle $50 format
+    if amount_str.startswith('$'):
+        amount_str = amount_str[1:] + 'usd'
+    
+    # Lowercase for matching
+    lower = amount_str.lower()
+    
+    # Satoshis (default)
+    if lower.endswith('sat') or lower.endswith('sats'):
+        num = lower.replace('sats', '').replace('sat', '').strip()
+        sats = int(float(num))
+        return sats, f"{sats:,} sats"
+    
+    # BTC
+    if lower.endswith('btc'):
+        num = lower.replace('btc', '').strip()
+        btc = float(num)
+        sats = int(btc * 100_000_000)
+        return sats, f"{btc} BTC ({sats:,} sats)"
+    
+    # USD
+    if lower.endswith('usd'):
+        num = lower.replace('usd', '').strip()
+        usd = float(num)
+        price = get_btc_price('USD')
+        if not price:
+            raise ValueError("Could not fetch BTC price for USD conversion")
+        btc = usd / price
+        sats = int(btc * 100_000_000)
+        return sats, f"${usd:.2f} USD ({sats:,} sats @ ${price:,.0f})"
+    
+    # EUR
+    if lower.endswith('eur'):
+        num = lower.replace('eur', '').strip()
+        eur = float(num)
+        price = get_btc_price('EUR')
+        if not price:
+            raise ValueError("Could not fetch BTC price for EUR conversion")
+        btc = eur / price
+        sats = int(btc * 100_000_000)
+        return sats, f"€{eur:.2f} EUR ({sats:,} sats @ €{price:,.0f})"
+    
+    # GBP
+    if lower.endswith('gbp'):
+        num = lower.replace('gbp', '').strip()
+        gbp = float(num)
+        price = get_btc_price('GBP')
+        if not price:
+            raise ValueError("Could not fetch BTC price for GBP conversion")
+        btc = gbp / price
+        sats = int(btc * 100_000_000)
+        return sats, f"£{gbp:.2f} GBP ({sats:,} sats @ £{price:,.0f})"
+    
+    # Default: plain number = sats
+    sats = int(float(amount_str))
+    return sats, f"{sats:,} sats"
+
 def get_address_txs(address: str, limit: int = 10) -> List[Dict]:
     """Get transaction history for address"""
     result = api_get(f"/address/{address}/txs")
@@ -1004,13 +1078,22 @@ def cmd_send(args):
         return 1
     
     dest_address = args.address
-    amount_sats = args.amount
+    
+    # Parse amount with unit support
+    try:
+        amount_sats, amount_desc = parse_amount(args.amount)
+    except ValueError as e:
+        print(f"")
+        print(f"[FAIL] Invalid amount: {e}")
+        print("")
+        return 1
+    
     fee_rate = args.fee or Config.DEFAULT_FEE_RATE
     
     print(f"")
     print(f"SEND TRANSACTION")
     print(f"  To:     {dest_address}")
-    print(f"  Amount: {amount_sats:,} sats")
+    print(f"  Amount: {amount_desc}")
     print(f"  Fee:    {fee_rate} sat/vB")
     
     try:
@@ -1526,6 +1609,71 @@ def cmd_verify(args):
     
     return 0
 
+def cmd_watch(args):
+    """Watch wallet for incoming transactions"""
+    wallet = Wallet()
+    if not wallet.load():
+        print("")
+        print("[FAIL] No wallet found. Run 'init' first.")
+        print("")
+        return 1
+    
+    interval = args.interval or 30
+    
+    print("")
+    print("=" * 60)
+    print("WATCHING FOR TRANSACTIONS")
+    print("=" * 60)
+    print("")
+    print(f"SegWit: {wallet.addresses['segwit']}")
+    print(f"Legacy: {wallet.addresses['legacy']}")
+    print(f"")
+    print(f"Checking every {interval} seconds. Press Ctrl+C to stop.")
+    print("")
+    
+    # Get initial balance
+    def get_total_balance():
+        total = 0
+        for addr in [wallet.addresses['segwit'], wallet.addresses['legacy']]:
+            info = get_address_info(addr)
+            if info:
+                funded = info['chain_stats']['funded_txo_sum']
+                spent = info['chain_stats']['spent_txo_sum']
+                total += funded - spent
+        return total
+    
+    last_balance = get_total_balance()
+    print(f"[{datetime.now().strftime('%H:%M:%S')}] Current balance: {last_balance:,} sats")
+    
+    try:
+        import time
+        while True:
+            time.sleep(interval)
+            
+            current = get_total_balance()
+            timestamp = datetime.now().strftime('%H:%M:%S')
+            
+            if current != last_balance:
+                diff = current - last_balance
+                if diff > 0:
+                    print(f"[{timestamp}] 💰 RECEIVED +{diff:,} sats! New balance: {current:,} sats")
+                    # Try system notification
+                    try:
+                        subprocess.run(['notify-send', 'Bitcoin Received!', f'+{diff:,} sats'], 
+                                     capture_output=True, timeout=5)
+                    except:
+                        pass
+                else:
+                    print(f"[{timestamp}] 📤 SENT {diff:,} sats. New balance: {current:,} sats")
+                last_balance = current
+            else:
+                print(f"[{timestamp}] No change. Balance: {current:,} sats")
+                
+    except KeyboardInterrupt:
+        print("")
+        print("Stopped watching.")
+        return 0
+
 # ============================================================================
 #                                  MAIN
 # ============================================================================
@@ -1541,10 +1689,15 @@ Examples:
   %(prog)s address --qr                Show address with QR code
   %(prog)s balance                     Check balance
   %(prog)s balance --fiat usd          Check balance with USD value
-  %(prog)s send bc1q... 10000          Send 10000 sats
-  %(prog)s send bc1q... 10000 -f 5     Send with 5 sat/vB fee
+  %(prog)s send bc1q... 10000          Send 10,000 sats
+  %(prog)s send bc1q... 0.001btc       Send 0.001 BTC
+  %(prog)s send bc1q... $50            Send $50 USD worth
+  %(prog)s send bc1q... 50usd          Send $50 USD worth
+  %(prog)s send bc1q... 50eur          Send 50 EUR worth
   %(prog)s sign-message "Hello"        Sign a message
   %(prog)s history                     Show transaction history
+  %(prog)s watch                       Watch for incoming coins
+  %(prog)s watch -i 60                 Watch, check every 60 seconds
   %(prog)s verify                      Verify SE050 is working
   %(prog)s export                      Export public key info
   %(prog)s wipe                        Delete wallet (DANGER!)
@@ -1571,7 +1724,7 @@ Examples:
     # send
     send_parser = subparsers.add_parser('send', help='Send Bitcoin')
     send_parser.add_argument('address', help='Destination address')
-    send_parser.add_argument('amount', type=int, help='Amount in satoshis')
+    send_parser.add_argument('amount', type=str, help='Amount: 10000, 0.0001btc, $50, 50usd')
     send_parser.add_argument('-f', '--fee', type=int, help='Fee rate (sat/vB)')
     send_parser.add_argument('-y', '--yes', action='store_true', help='Skip confirmation')
     
@@ -1585,6 +1738,10 @@ Examples:
     
     # verify
     subparsers.add_parser('verify', help='Verify SE050 is working correctly')
+    
+    # watch
+    watch_parser = subparsers.add_parser('watch', help='Watch for incoming transactions')
+    watch_parser.add_argument('-i', '--interval', type=int, default=30, help='Check interval in seconds (default: 30)')
     
     # export
     subparsers.add_parser('export', help='Export public key info')
@@ -1610,6 +1767,7 @@ Examples:
         'sign-message': cmd_sign_message,
         'history': cmd_history,
         'verify': cmd_verify,
+        'watch': cmd_watch,
         'export': cmd_export,
         'wipe': cmd_wipe,
         'info': cmd_info,
