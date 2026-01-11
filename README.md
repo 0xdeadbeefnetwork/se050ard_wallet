@@ -782,9 +782,6 @@ MIT
 
 _SiCk @ afflicted.sh
 
-## Repository
-
-https://github.com/AffictedIntelligence/se050ard_wallet
 
 ## Contributing
 
