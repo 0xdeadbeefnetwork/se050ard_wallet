@@ -784,7 +784,7 @@ _SiCk @ afflicted.sh
 
 ## Repository
 
-https://github.com/AffictedIntelligence/se050ard_wallet
+https://github.com/0xdeadbeefnetwork/se050ard_wallet
 
 ## Contributing
 
