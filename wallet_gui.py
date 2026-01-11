@@ -46,7 +46,7 @@ class WalletGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("SE050ARD Bitcoin Wallet")
-        self.root.geometry("800x600")
+        self.root.geometry("850x650")
         self.root.configure(bg='#1a1a2e')
         
         # Wallet state
@@ -63,7 +63,7 @@ class WalletGUI:
         self.style.theme_use('clam')
         self.configure_styles()
         
-        # Build UI
+        # Build UI with tabs
         self.create_widgets()
         
         # Initial load
@@ -78,16 +78,18 @@ class WalletGUI:
         self.style.configure('Balance.TLabel', font=('Consolas', 24, 'bold'), foreground='#2ecc71')
         self.style.configure('TButton', font=('Consolas', 10), padding=10)
         self.style.configure('Status.TLabel', font=('Consolas', 9), foreground='#888')
+        self.style.configure('TNotebook', background='#1a1a2e')
+        self.style.configure('TNotebook.Tab', font=('Consolas', 10), padding=[10, 5])
         
     def create_widgets(self):
-        """Create all UI widgets"""
+        """Create all UI widgets with tabs"""
         # Main container
-        self.main_frame = ttk.Frame(self.root, padding=20)
+        self.main_frame = ttk.Frame(self.root, padding=10)
         self.main_frame.pack(fill=tk.BOTH, expand=True)
         
         # Header
         header_frame = ttk.Frame(self.main_frame)
-        header_frame.pack(fill=tk.X, pady=(0, 20))
+        header_frame.pack(fill=tk.X, pady=(0, 10))
         
         ttk.Label(header_frame, text="SE050ARD HARDWARE WALLET", style='Title.TLabel').pack(side=tk.LEFT)
         
@@ -106,9 +108,36 @@ class WalletGUI:
         self.status_label = ttk.Label(self.status_frame, text="Connecting...", style='Status.TLabel')
         self.status_label.pack(side=tk.LEFT)
         
+        # Notebook (tabs)
+        self.notebook = ttk.Notebook(self.main_frame)
+        self.notebook.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
+        
+        # Tab 1: Wallet
+        self.wallet_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.wallet_tab, text='💰 Wallet')
+        self.create_wallet_tab()
+        
+        # Tab 2: History
+        self.history_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.history_tab, text='📜 History')
+        self.create_history_tab()
+        
+        # Tab 3: Keys
+        self.keys_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.keys_tab, text='🔐 Keys')
+        self.create_keys_tab()
+        
+        # Bottom status bar
+        self.bottom_status = ttk.Label(self.main_frame, text="", style='Status.TLabel')
+        self.bottom_status.pack(fill=tk.X, pady=(10, 0))
+    
+    def create_wallet_tab(self):
+        """Create the main wallet tab"""
+        frame = self.wallet_tab
+        
         # Content area - two columns
-        content_frame = ttk.Frame(self.main_frame)
-        content_frame.pack(fill=tk.BOTH, expand=True)
+        content_frame = ttk.Frame(frame)
+        content_frame.pack(fill=tk.BOTH, expand=True, pady=10)
         
         # Left column - wallet info
         left_frame = ttk.Frame(content_frame)
@@ -156,13 +185,12 @@ class WalletGUI:
         self.qr_canvas.create_text(90, 90, text="No wallet", fill='#999')
         
         # Action buttons
-        button_frame = ttk.Frame(self.main_frame)
-        button_frame.pack(fill=tk.X, pady=(20, 10))
+        button_frame = ttk.Frame(frame)
+        button_frame.pack(fill=tk.X, pady=(10, 0))
         
         ttk.Button(button_frame, text="🔄 Refresh", command=self.refresh_balance).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(button_frame, text="📤 Send", command=self.show_send_dialog).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(button_frame, text="✍️ Sign Message", command=self.show_sign_dialog).pack(side=tk.LEFT, padx=(0, 5))
-        ttk.Button(button_frame, text="📜 History", command=self.show_history).pack(side=tk.LEFT, padx=(0, 5))
         ttk.Button(button_frame, text="✓ Verify", command=self.verify_se050).pack(side=tk.LEFT, padx=(0, 5))
         
         # Monitor toggle
@@ -171,10 +199,114 @@ class WalletGUI:
         
         self.monitor_label = ttk.Label(button_frame, text="", style='Status.TLabel')
         self.monitor_label.pack(side=tk.RIGHT, padx=(5, 0))
+    
+    def create_history_tab(self):
+        """Create the transaction history tab"""
+        frame = self.history_tab
         
-        # Bottom status bar
-        self.bottom_status = ttk.Label(self.main_frame, text="", style='Status.TLabel')
-        self.bottom_status.pack(fill=tk.X, pady=(10, 0))
+        # Header
+        header_frame = ttk.Frame(frame)
+        header_frame.pack(fill=tk.X, pady=(10, 10))
+        
+        ttk.Label(header_frame, text="TRANSACTION HISTORY", style='Title.TLabel').pack(side=tk.LEFT)
+        ttk.Button(header_frame, text="🔄 Refresh", command=self.refresh_history).pack(side=tk.RIGHT)
+        
+        # Treeview for transactions
+        tree_frame = ttk.Frame(frame)
+        tree_frame.pack(fill=tk.BOTH, expand=True)
+        
+        columns = ('date', 'type', 'amount', 'txid')
+        self.history_tree = ttk.Treeview(tree_frame, columns=columns, show='headings', height=15)
+        self.history_tree.heading('date', text='Date')
+        self.history_tree.heading('type', text='Type')
+        self.history_tree.heading('amount', text='Amount (sats)')
+        self.history_tree.heading('txid', text='Transaction ID')
+        self.history_tree.column('date', width=130, minwidth=130)
+        self.history_tree.column('type', width=60, minwidth=60)
+        self.history_tree.column('amount', width=120, minwidth=100)
+        self.history_tree.column('txid', width=500, minwidth=200)
+        
+        # Scrollbars
+        yscroll = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.history_tree.yview)
+        xscroll = ttk.Scrollbar(tree_frame, orient=tk.HORIZONTAL, command=self.history_tree.xview)
+        self.history_tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        
+        self.history_tree.grid(row=0, column=0, sticky='nsew')
+        yscroll.grid(row=0, column=1, sticky='ns')
+        xscroll.grid(row=1, column=0, sticky='ew')
+        
+        tree_frame.grid_rowconfigure(0, weight=1)
+        tree_frame.grid_columnconfigure(0, weight=1)
+        
+        # Double-click to open in explorer
+        self.history_tree.bind('<Double-1>', self.open_tx_in_explorer)
+        
+        # Right-click menu
+        self.history_menu = tk.Menu(self.root, tearoff=0)
+        self.history_menu.add_command(label="📋 Copy TXID", command=self.copy_selected_txid)
+        self.history_menu.add_command(label="🌐 View in Explorer", command=self.open_selected_tx)
+        self.history_tree.bind('<Button-3>', self.show_history_menu)
+        
+        # Instructions
+        ttk.Label(frame, text="Double-click or right-click a transaction to view in explorer", 
+                  style='Status.TLabel').pack(pady=(5, 0))
+    
+    def create_keys_tab(self):
+        """Create the key management tab"""
+        frame = self.keys_tab
+        
+        # Header
+        ttk.Label(frame, text="KEY MANAGEMENT", style='Title.TLabel').pack(anchor=tk.W, pady=(10, 20))
+        
+        # Current key info
+        info_frame = ttk.LabelFrame(frame, text="Current Wallet", padding=10)
+        info_frame.pack(fill=tk.X, pady=(0, 20))
+        
+        self.key_info_text = tk.Text(info_frame, height=6, font=('Consolas', 9), bg='#0d0d1a', fg='#aaa',
+                                      relief=tk.FLAT, padx=10, pady=10)
+        self.key_info_text.pack(fill=tk.X)
+        self.key_info_text.config(state='disabled')
+        
+        # Key slot selector
+        slot_frame = ttk.LabelFrame(frame, text="Key Slot", padding=10)
+        slot_frame.pack(fill=tk.X, pady=(0, 20))
+        
+        slot_inner = ttk.Frame(slot_frame)
+        slot_inner.pack(fill=tk.X)
+        
+        ttk.Label(slot_inner, text="Key ID: 0x").pack(side=tk.LEFT)
+        self.keyid_var = tk.StringVar(value=Config.KEY_ID)
+        keyid_entry = ttk.Entry(slot_inner, textvariable=self.keyid_var, font=('Consolas', 10), width=12)
+        keyid_entry.pack(side=tk.LEFT, padx=(0, 10))
+        
+        ttk.Button(slot_inner, text="Load Slot", command=self.load_key_slot).pack(side=tk.LEFT, padx=(0, 5))
+        ttk.Button(slot_inner, text="Check SE050", command=self.check_key_slot).pack(side=tk.LEFT)
+        
+        # Common slots
+        ttk.Label(slot_frame, text="Common slots: 20000001, 20000002, 20000003", 
+                  style='Status.TLabel').pack(anchor=tk.W, pady=(10, 0))
+        
+        # Actions
+        action_frame = ttk.LabelFrame(frame, text="Actions", padding=10)
+        action_frame.pack(fill=tk.X, pady=(0, 20))
+        
+        btn_frame = ttk.Frame(action_frame)
+        btn_frame.pack(fill=tk.X)
+        
+        ttk.Button(btn_frame, text="🔑 Init New Wallet", command=self.init_new_wallet).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(btn_frame, text="📤 Export Pubkey", command=self.export_pubkey).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Button(btn_frame, text="🗑️ Wipe Key (DANGER)", command=self.wipe_key).pack(side=tk.LEFT)
+        
+        # SE050 Info
+        se050_frame = ttk.LabelFrame(frame, text="SE050 Status", padding=10)
+        se050_frame.pack(fill=tk.X)
+        
+        self.se050_info_text = tk.Text(se050_frame, height=4, font=('Consolas', 9), bg='#0d0d1a', fg='#aaa',
+                                        relief=tk.FLAT, padx=10, pady=10)
+        self.se050_info_text.pack(fill=tk.X)
+        self.se050_info_text.config(state='disabled')
+        
+        ttk.Button(se050_frame, text="🔄 Refresh SE050 Info", command=self.refresh_se050_info).pack(anchor=tk.W, pady=(10, 0))
         
     def initial_load(self):
         """Initial connection and wallet load"""
@@ -190,9 +322,14 @@ class WalletGUI:
                 
                 if self.wallet.load():
                     self.root.after(0, self.update_wallet_display)
+                    self.root.after(0, self.update_key_info)
                     self.root.after(0, self.refresh_balance)
+                    self.root.after(0, self.refresh_history)
+                    self.root.after(0, self.refresh_se050_info)
                 else:
-                    self.root.after(0, lambda: self.set_status("No wallet found - use CLI to init", 'orange'))
+                    self.root.after(0, lambda: self.set_status("No wallet found - init from Keys tab", 'orange'))
+                    self.root.after(0, self.update_key_info)
+                    self.root.after(0, self.refresh_se050_info)
             else:
                 self.root.after(0, lambda: self.set_status("SE050 Connection Failed", 'red'))
         except Exception as e:
@@ -377,6 +514,305 @@ class WalletGUI:
         self.root.clipboard_append(self.legacy_var.get())
         self.bottom_status.config(text="Legacy address copied!")
     
+    # History tab methods
+    def refresh_history(self):
+        """Refresh transaction history"""
+        if not self.wallet.addresses:
+            return
+        self.bottom_status.config(text="Fetching transactions...")
+        threading.Thread(target=self._fetch_history, daemon=True).start()
+    
+    def _fetch_history(self):
+        """Background thread: fetch transaction history"""
+        try:
+            # Clear existing
+            self.root.after(0, lambda: self.history_tree.delete(*self.history_tree.get_children()))
+            
+            all_txs = []
+            our_addresses = {self.wallet.addresses['segwit'], self.wallet.addresses['legacy']}
+            
+            for addr in our_addresses:
+                txs = get_address_txs(addr, limit=50)
+                all_txs.extend(txs)
+            
+            # Dedupe
+            seen = set()
+            unique = []
+            for tx in all_txs:
+                if tx['txid'] not in seen:
+                    seen.add(tx['txid'])
+                    unique.append(tx)
+            
+            # Sort by time
+            unique.sort(key=lambda x: x.get('status', {}).get('block_time', 0), reverse=True)
+            
+            for tx in unique[:50]:
+                status = tx.get('status', {})
+                block_time = status.get('block_time', 0)
+                confirmed = status.get('confirmed', False)
+                date_str = format_timestamp(block_time) if block_time else "⏳ Pending"
+                
+                # Calculate net
+                total_in = sum(v.get('value', 0) for v in tx.get('vout', []) if v.get('scriptpubkey_address') in our_addresses)
+                total_out = sum(vin.get('prevout', {}).get('value', 0) for vin in tx.get('vin', []) if vin.get('prevout', {}).get('scriptpubkey_address') in our_addresses)
+                net = total_in - total_out
+                
+                if net > 0:
+                    tx_type = "⬇ RECV"
+                elif net < 0:
+                    tx_type = "⬆ SEND"
+                else:
+                    tx_type = "↔ SELF"
+                
+                txid = tx['txid']
+                
+                self.root.after(0, lambda d=date_str, t=tx_type, a=net, tid=txid: 
+                    self.history_tree.insert('', tk.END, values=(d, t, f"{a:+,}", tid)))
+            
+            self.root.after(0, lambda: self.bottom_status.config(text=f"Loaded {len(unique)} transactions"))
+        except Exception as e:
+            self.root.after(0, lambda: self.bottom_status.config(text=f"Error: {e}"))
+    
+    def show_history_menu(self, event):
+        """Show right-click menu for history"""
+        item = self.history_tree.identify_row(event.y)
+        if item:
+            self.history_tree.selection_set(item)
+            self.history_menu.post(event.x_root, event.y_root)
+    
+    def get_selected_txid(self):
+        """Get TXID of selected history item"""
+        selection = self.history_tree.selection()
+        if selection:
+            item = self.history_tree.item(selection[0])
+            return item['values'][3]  # txid is 4th column
+        return None
+    
+    def copy_selected_txid(self):
+        """Copy selected transaction ID"""
+        txid = self.get_selected_txid()
+        if txid:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(txid)
+            self.bottom_status.config(text=f"Copied: {txid[:16]}...")
+    
+    def open_selected_tx(self):
+        """Open selected transaction in explorer"""
+        txid = self.get_selected_txid()
+        if txid:
+            self.open_tx_url(txid)
+    
+    def open_tx_in_explorer(self, event):
+        """Double-click handler to open tx in explorer"""
+        txid = self.get_selected_txid()
+        if txid:
+            self.open_tx_url(txid)
+    
+    def open_tx_url(self, txid):
+        """Open transaction in web browser"""
+        import webbrowser
+        explorer = "mempool.space/testnet4" if Config.NETWORK == "testnet" else "mempool.space"
+        url = f"https://{explorer}/tx/{txid}"
+        webbrowser.open(url)
+        self.bottom_status.config(text=f"Opened {txid[:16]}... in browser")
+    
+    # Keys tab methods
+    def update_key_info(self):
+        """Update key info display"""
+        self.key_info_text.config(state='normal')
+        self.key_info_text.delete('1.0', tk.END)
+        
+        lines = []
+        lines.append(f"  Key ID:     0x{Config.KEY_ID}")
+        lines.append(f"  Network:    {Config.NETWORK}")
+        
+        if self.wallet.addresses:
+            lines.append(f"  SegWit:     {self.wallet.addresses['segwit']}")
+            lines.append(f"  Legacy:     {self.wallet.addresses['legacy']}")
+            lines.append(f"  Pubkey:     {self.wallet.pubkey_compressed.hex()[:32]}...")
+        else:
+            lines.append(f"  Status:     No wallet loaded")
+        
+        self.key_info_text.insert('1.0', '\n'.join(lines))
+        self.key_info_text.config(state='disabled')
+    
+    def refresh_se050_info(self):
+        """Refresh SE050 status info"""
+        self.bottom_status.config(text="Querying SE050...")
+        threading.Thread(target=self._fetch_se050_info, daemon=True).start()
+    
+    def _fetch_se050_info(self):
+        """Background: get SE050 info"""
+        lines = []
+        try:
+            uid = se050_get_uid()
+            if uid:
+                lines.append(f"  UID:    {uid}")
+            
+            rng = se050_get_random()
+            if rng:
+                lines.append(f"  TRNG:   {rng.hex()[:24]}...")
+            
+            if se050_key_exists(Config.KEY_ID):
+                lines.append(f"  Key 0x{Config.KEY_ID}: Present ✓")
+            else:
+                lines.append(f"  Key 0x{Config.KEY_ID}: Not found")
+            
+            self.root.after(0, lambda: self._update_se050_display(lines))
+        except Exception as e:
+            self.root.after(0, lambda: self._update_se050_display([f"  Error: {e}"]))
+    
+    def _update_se050_display(self, lines):
+        """Update SE050 info display"""
+        self.se050_info_text.config(state='normal')
+        self.se050_info_text.delete('1.0', tk.END)
+        self.se050_info_text.insert('1.0', '\n'.join(lines))
+        self.se050_info_text.config(state='disabled')
+        self.bottom_status.config(text="SE050 info updated")
+    
+    def load_key_slot(self):
+        """Load a different key slot"""
+        new_keyid = self.keyid_var.get().strip()
+        if not new_keyid:
+            messagebox.showerror("Error", "Enter a key ID")
+            return
+        
+        Config.KEY_ID = new_keyid
+        self.wallet = Wallet()
+        
+        if self.wallet.load():
+            self.update_wallet_display()
+            self.update_key_info()
+            self.refresh_balance()
+            self.bottom_status.config(text=f"Loaded key slot 0x{new_keyid}")
+        else:
+            self.segwit_var.set("---")
+            self.legacy_var.set("---")
+            self.balance_label.config(text="--- sats")
+            self.update_key_info()
+            self.bottom_status.config(text=f"No wallet at slot 0x{new_keyid}")
+    
+    def check_key_slot(self):
+        """Check if key exists in SE050"""
+        keyid = self.keyid_var.get().strip()
+        if se050_key_exists(keyid):
+            messagebox.showinfo("Key Check", f"Key 0x{keyid} EXISTS in SE050")
+        else:
+            messagebox.showinfo("Key Check", f"Key 0x{keyid} NOT FOUND in SE050")
+    
+    def init_new_wallet(self):
+        """Initialize new wallet at current key slot"""
+        keyid = self.keyid_var.get().strip()
+        
+        # Check if key already exists
+        if se050_key_exists(keyid):
+            if not messagebox.askyesno("Warning", f"Key 0x{keyid} already exists!\n\nThis will generate a NEW key,\noverwriting the existing one.\n\nContinue?"):
+                return
+        
+        msg = f"Initialize NEW wallet at key slot 0x{keyid}?\n\n"
+        msg += "This will:\n"
+        msg += "• Generate a new private key on SE050\n"
+        msg += "• Create new Bitcoin addresses\n\n"
+        msg += "⚠️ There is NO seed phrase backup!"
+        
+        if not messagebox.askyesno("Confirm Init", msg):
+            return
+        
+        Config.KEY_ID = keyid
+        self.bottom_status.config(text="Generating key on SE050...")
+        threading.Thread(target=self._init_wallet, daemon=True).start()
+    
+    def _init_wallet(self):
+        """Background: init wallet"""
+        try:
+            # Generate keypair
+            if not se050_generate_keypair(Config.KEY_ID):
+                self.root.after(0, lambda: messagebox.showerror("Error", "Key generation failed"))
+                return
+            
+            # Export public key
+            pubkey_path = Config.pubkey_der_path()
+            if not se050_export_pubkey(Config.KEY_ID, pubkey_path, "DER"):
+                self.root.after(0, lambda: messagebox.showerror("Error", "Pubkey export failed"))
+                return
+            
+            # Load wallet
+            self.wallet = Wallet()
+            if self.wallet.load():
+                self.root.after(0, self.update_wallet_display)
+                self.root.after(0, self.update_key_info)
+                self.root.after(0, lambda: messagebox.showinfo("Success", 
+                    f"Wallet created!\n\nKey ID: 0x{Config.KEY_ID}\n"
+                    f"SegWit: {self.wallet.addresses['segwit'][:20]}...\n\n"
+                    f"⚠️ No seed phrase - backup the SE050!"))
+            else:
+                self.root.after(0, lambda: messagebox.showerror("Error", "Failed to load new wallet"))
+        except Exception as e:
+            self.root.after(0, lambda: messagebox.showerror("Error", f"Init failed: {e}"))
+    
+    def export_pubkey(self):
+        """Export public key info"""
+        if not self.wallet.addresses:
+            messagebox.showerror("Error", "No wallet loaded")
+            return
+        
+        info = f"Key ID: 0x{Config.KEY_ID}\n"
+        info += f"Network: {Config.NETWORK}\n\n"
+        info += f"Compressed Pubkey (hex):\n{self.wallet.pubkey_compressed.hex()}\n\n"
+        info += f"SegWit Address:\n{self.wallet.addresses['segwit']}\n\n"
+        info += f"Legacy Address:\n{self.wallet.addresses['legacy']}"
+        
+        # Show in dialog with copy button
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Public Key Export")
+        dialog.geometry("500x350")
+        dialog.configure(bg='#1a1a2e')
+        
+        text = tk.Text(dialog, font=('Consolas', 9), bg='#0d0d1a', fg='#aaa', padx=10, pady=10)
+        text.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        text.insert('1.0', info)
+        text.config(state='disabled')
+        
+        def copy_all():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(info)
+        
+        ttk.Button(dialog, text="📋 Copy All", command=copy_all).pack(pady=(0, 10))
+    
+    def wipe_key(self):
+        """Wipe key from SE050"""
+        keyid = self.keyid_var.get().strip()
+        
+        msg = f"⚠️ DANGER: WIPE KEY 0x{keyid}? ⚠️\n\n"
+        msg += "This will PERMANENTLY DELETE:\n"
+        msg += "• The private key from SE050\n"
+        msg += "• All access to funds at this address\n\n"
+        msg += "This CANNOT be undone!\n\n"
+        msg += "Type 'WIPE' to confirm:"
+        
+        confirm = simpledialog.askstring("Confirm Wipe", msg, parent=self.root)
+        if confirm != "WIPE":
+            self.bottom_status.config(text="Wipe cancelled")
+            return
+        
+        try:
+            se050_delete_key(keyid)
+            
+            # Delete local files
+            for path in [Config.pubkey_der_path(), Config.pubkey_pem_path(), Config.wallet_info_path()]:
+                if path.exists():
+                    path.unlink()
+            
+            self.wallet = Wallet()
+            self.segwit_var.set("---")
+            self.legacy_var.set("---")
+            self.balance_label.config(text="--- sats")
+            self.update_key_info()
+            
+            messagebox.showinfo("Wiped", f"Key 0x{keyid} has been wiped")
+        except Exception as e:
+            messagebox.showerror("Error", f"Wipe failed: {e}")
+    
     def show_send_dialog(self):
         """Show send transaction dialog"""
         if not self.wallet.addresses:
@@ -446,79 +882,6 @@ class WalletGUI:
         ttk.Button(frame, text="📋 Copy Signature", command=copy_sig).pack()
         
         self.bottom_status.config(text="Message signed!")
-    
-    def show_history(self):
-        """Show transaction history"""
-        if not self.wallet.addresses:
-            messagebox.showerror("Error", "No wallet loaded")
-            return
-        
-        hist_window = tk.Toplevel(self.root)
-        hist_window.title("Transaction History")
-        hist_window.geometry("700x400")
-        hist_window.configure(bg='#1a1a2e')
-        
-        frame = ttk.Frame(hist_window, padding=10)
-        frame.pack(fill=tk.BOTH, expand=True)
-        
-        ttk.Label(frame, text="TRANSACTION HISTORY", style='Title.TLabel').pack(anchor=tk.W, pady=(0, 10))
-        
-        # Treeview for transactions
-        columns = ('date', 'type', 'amount', 'txid')
-        tree = ttk.Treeview(frame, columns=columns, show='headings', height=15)
-        tree.heading('date', text='Date')
-        tree.heading('type', text='Type')
-        tree.heading('amount', text='Amount (sats)')
-        tree.heading('txid', text='TXID')
-        tree.column('date', width=120)
-        tree.column('type', width=60)
-        tree.column('amount', width=120)
-        tree.column('txid', width=380)
-        tree.pack(fill=tk.BOTH, expand=True)
-        
-        # Scrollbar
-        scrollbar = ttk.Scrollbar(frame, orient=tk.VERTICAL, command=tree.yview)
-        tree.configure(yscroll=scrollbar.set)
-        
-        # Fetch history
-        threading.Thread(target=lambda: self._fetch_history(tree), daemon=True).start()
-    
-    def _fetch_history(self, tree):
-        """Background thread: fetch transaction history"""
-        try:
-            all_txs = []
-            our_addresses = {self.wallet.addresses['segwit'], self.wallet.addresses['legacy']}
-            
-            for addr in our_addresses:
-                txs = get_address_txs(addr, limit=50)
-                all_txs.extend(txs)
-            
-            # Dedupe
-            seen = set()
-            unique = []
-            for tx in all_txs:
-                if tx['txid'] not in seen:
-                    seen.add(tx['txid'])
-                    unique.append(tx)
-            
-            # Sort by time
-            unique.sort(key=lambda x: x.get('status', {}).get('block_time', 0), reverse=True)
-            
-            for tx in unique[:20]:
-                status = tx.get('status', {})
-                block_time = status.get('block_time', 0)
-                date_str = format_timestamp(block_time) if block_time else "Unconfirmed"
-                
-                # Calculate net
-                total_in = sum(v.get('value', 0) for v in tx.get('vout', []) if v.get('scriptpubkey_address') in our_addresses)
-                total_out = sum(vin.get('prevout', {}).get('value', 0) for vin in tx.get('vin', []) if vin.get('prevout', {}).get('scriptpubkey_address') in our_addresses)
-                net = total_in - total_out
-                
-                tx_type = "RECV" if net > 0 else "SEND" if net < 0 else "SELF"
-                
-                self.root.after(0, lambda d=date_str, t=tx_type, a=net, txid=tx['txid']: tree.insert('', tk.END, values=(d, t, f"{a:+,}", txid[:24]+"...")))
-        except Exception as e:
-            self.root.after(0, lambda: messagebox.showerror("Error", f"Failed to fetch history: {e}"))
     
     def verify_se050(self):
         """Verify SE050 is working"""
@@ -720,13 +1083,13 @@ class SendDialog:
         
         # Build display
         lines = []
-        lines.append(f"  Available:    {self.sats_to_unit(balance_sats, unit)}")
+        lines.append(f"  Available balance: {self.sats_to_unit(balance_sats, unit)}")
         lines.append(f"")
-        lines.append(f"  Send amount:  {self.sats_to_unit(amount_sats, unit)}")
-        lines.append(f"  Network fee:  {self.sats_to_unit(fee_sats, unit)} (~{est_vsize} vB × {fee_rate} sat/vB)")
-        lines.append(f"  ────────────────────────────────")
-        lines.append(f"  Total needed: {self.sats_to_unit(total_needed, unit)}")
-        lines.append(f"  Change back:  {self.sats_to_unit(change_sats, unit)}")
+        lines.append(f"  Recipient gets:    {self.sats_to_unit(amount_sats, unit)}")
+        lines.append(f"  Network fee:       {self.sats_to_unit(fee_sats, unit)} (~{est_vsize} vB × {fee_rate} sat/vB)")
+        lines.append(f"  ────────────────────────────────────")
+        lines.append(f"  Total from wallet: {self.sats_to_unit(total_needed, unit)}")
+        lines.append(f"  Change returned:   {self.sats_to_unit(change_sats, unit)}")
         
         if balance_sats < total_needed:
             shortfall = total_needed - balance_sats
@@ -744,7 +1107,7 @@ class SendDialog:
         self.calc_text.config(state='disabled')
     
     def set_max_amount(self):
-        """Set amount to max available (minus fee)"""
+        """Set amount to max recipient can receive (balance minus fees)"""
         try:
             fee_rate = int(self.fee_var.get().strip())
         except:
