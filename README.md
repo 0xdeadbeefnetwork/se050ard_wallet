@@ -191,7 +191,7 @@ ssscli connect se05x vcom /dev/ttyACM0
 ### 4. Install Wallet
 
 ```bash
-git clone https://github.com/AffictedIntelligence/se050ard_wallet.git
+git clone https://github.com/0xdeadbeefnetwork/se050ard_wallet.git
 cd se050ard_wallet
 chmod +x wallet.py
 ```
