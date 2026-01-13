@@ -48,7 +48,6 @@ The SE050 is a ~$2 secure element with:
 - Hardware true random number generator (TRNG)
 - Tamper-resistant key storage
 - On-chip ECDSA signing (secp256k1)
-- Open documentation
 
 This project turns an SE050 eval kit into a functional Bitcoin hardware wallet.
 
@@ -727,7 +726,6 @@ When sending:
 
 Future improvements could include:
 - Smarter coin selection (minimize inputs)
-- RBF (Replace-By-Fee) support
 - CPFP (Child-Pays-For-Parent)
 
 ---
@@ -747,17 +745,13 @@ Future improvements could include:
 | QR code display | ✅ Working |
 | Message signing | ✅ Working |
 | Transaction history | ✅ Working |
-| **Balance monitoring** | ✅ **NEW** |
 | SE050 verification | ✅ Working |
 | Multiple wallets | ✅ Via --keyid |
 | BIP-62 low-S signatures | ✅ Normalized |
 | Transaction broadcast | ✅ Via mempool.space |
 | Tkinter GUI | ✅ Working |
-| P2SH-P2WPKH (Wrapped SegWit) | ❌ Not implemented |
-| Multisig | ❌ Not implemented |
-| RBF | ❌ Not implemented |
-| Hardware PIN/auth | ❌ Not implemented |
-| Watch-only export | 🔜 Coming soon |
+| RBF | ✅ Implemented |
+
 
 ---
 
@@ -766,6 +760,7 @@ Future improvements could include:
 **Required:**
 - Python 3.7+
 - ssscli (NXP Plug & Trust Middleware)
+- tkinter
 
 **Optional (for extra features):**
 - `qrcode` - Better QR code display (`pip3 install qrcode --break-system-packages`)
@@ -782,6 +777,9 @@ MIT
 
 _SiCk @ afflicted.sh
 
+## Repository
+
+https://github.com/0xdeadbeefnetwork/se050ard_wallet
 
 ## Contributing
 

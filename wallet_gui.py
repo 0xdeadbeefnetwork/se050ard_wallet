@@ -22,9 +22,9 @@ import os
 
 # Import wallet functions
 from wallet import (
-    Config, Wallet, 
+    Config, Wallet,
     se050_connect, se050_disconnect, se050_reconnect,
-    se050_key_exists, se050_sign, se050_get_uid, se050_get_random,
+    se050_key_exists, se050_sign, se050_get_uid,
     se050_generate_keypair, se050_export_pubkey, se050_delete_key,
     get_utxos, get_address_info, get_fee_estimates, get_btc_price, get_address_txs,
     format_timestamp, build_and_sign_transaction, create_output_script, api_post,
@@ -50,27 +50,24 @@ class WalletGUI:
         self.root.geometry("900x700")
         self.root.configure(bg='#0f0f1a')
         self.root.minsize(800, 600)
-        
+
         # Wallet state
         self.wallet = Wallet()
         self.connected = False
         self.balance_sats = 0
         self.btc_price = None
-        self.monitoring = False
-        self.monitor_interval = 30  # seconds
-        self.last_balance = 0
-        
+
         # Style
         self.style = ttk.Style()
         self.style.theme_use('clam')
         self.configure_styles()
-        
+
         # Build UI with tabs
         self.create_widgets()
-        
+
         # Initial load
         self.root.after(100, self.initial_load)
-    
+
     def configure_styles(self):
         """Configure ttk styles for polished dark theme"""
         # Colors
@@ -83,11 +80,11 @@ class WalletGUI:
         self.accent_green = '#27ae60'
         self.accent_red = '#e74c3c'
         self.accent_blue = '#3498db'
-        
+
         # Frame styles
         self.style.configure('TFrame', background=self.bg_dark)
         self.style.configure('Card.TFrame', background=self.bg_mid)
-        
+
         # Label styles
         self.style.configure('TLabel', background=self.bg_dark, foreground=self.fg_main, font=('Segoe UI', 10))
         self.style.configure('Title.TLabel', font=('Segoe UI', 16, 'bold'), foreground=self.accent, background=self.bg_dark)
@@ -96,222 +93,302 @@ class WalletGUI:
         self.style.configure('Address.TLabel', font=('Consolas', 9), foreground=self.accent_blue, background=self.bg_dark)
         self.style.configure('Status.TLabel', font=('Segoe UI', 9), foreground=self.fg_dim, background=self.bg_dark)
         self.style.configure('Card.TLabel', background=self.bg_mid, foreground=self.fg_main, font=('Segoe UI', 10))
-        
+
         # Button styles
         self.style.configure('TButton', font=('Segoe UI', 10), padding=(15, 8))
         self.style.map('TButton',
             background=[('active', self.bg_light), ('!active', self.bg_mid)],
-            foreground=[('active', self.fg_main), ('!active', self.fg_main)])
-        
+            foreground=[('active', self.fg_main), ('!active', self.fg_main)]
+        )
+
         self.style.configure('Accent.TButton', font=('Segoe UI', 10, 'bold'), padding=(15, 8))
-        
-        # Entry styles  
+
+        # Entry styles
         self.style.configure('TEntry', fieldbackground=self.bg_light, foreground=self.fg_main)
-        
+
         # Notebook (tabs)
         self.style.configure('TNotebook', background=self.bg_dark, borderwidth=0)
-        self.style.configure('TNotebook.Tab', font=('Segoe UI', 10, 'bold'), padding=(20, 10),
-                            background=self.bg_mid, foreground=self.fg_dim)
+        self.style.configure(
+            'TNotebook.Tab',
+            font=('Segoe UI', 10, 'bold'),
+            padding=(20, 10),
+            background=self.bg_mid,
+            foreground=self.fg_dim
+        )
         self.style.map('TNotebook.Tab',
             background=[('selected', self.bg_light)],
-            foreground=[('selected', self.accent)])
-        
+            foreground=[('selected', self.accent)]
+        )
+
         # Treeview
-        self.style.configure('Treeview', 
-            background=self.bg_mid, 
-            foreground=self.fg_main, 
+        self.style.configure(
+            'Treeview',
+            background=self.bg_mid,
+            foreground=self.fg_main,
             fieldbackground=self.bg_mid,
             font=('Consolas', 9),
-            rowheight=28)
-        self.style.configure('Treeview.Heading', 
-            background=self.bg_light, 
+            rowheight=28
+        )
+        self.style.configure(
+            'Treeview.Heading',
+            background=self.bg_light,
             foreground=self.fg_main,
-            font=('Segoe UI', 9, 'bold'))
+            font=('Segoe UI', 9, 'bold')
+        )
         self.style.map('Treeview', background=[('selected', self.bg_light)])
-        
+
         # LabelFrame
         self.style.configure('TLabelframe', background=self.bg_dark)
         self.style.configure('TLabelframe.Label', background=self.bg_dark, foreground=self.accent, font=('Segoe UI', 10, 'bold'))
-        
+
         # Combobox
         self.style.configure('TCombobox', fieldbackground=self.bg_light, background=self.bg_mid)
-        
+
         # Scrollbar
         self.style.configure('TScrollbar', background=self.bg_mid, troughcolor=self.bg_dark)
-        
+
     def create_widgets(self):
         """Create all UI widgets with tabs"""
         # Main container
         self.main_frame = ttk.Frame(self.root, padding=15)
         self.main_frame.pack(fill=tk.BOTH, expand=True)
-        
+
         # Header
         header_frame = ttk.Frame(self.main_frame)
         header_frame.pack(fill=tk.X, pady=(0, 15))
-        
+
         ttk.Label(header_frame, text="SE050ARD WALLET", style='Title.TLabel').pack(side=tk.LEFT)
-        
+
         # Network badge
         network_color = self.accent_red if Config.NETWORK == 'mainnet' else self.accent
         network_text = f"● {Config.NETWORK.upper()}"
-        self.network_label = ttk.Label(header_frame, text=network_text, foreground=network_color, font=('Segoe UI', 10, 'bold'))
+        self.network_label = ttk.Label(
+            header_frame,
+            text=network_text,
+            foreground=network_color,
+            font=('Segoe UI', 10, 'bold')
+        )
         self.network_label.pack(side=tk.RIGHT)
-        
+
         # Connection status
         self.status_frame = ttk.Frame(self.main_frame)
         self.status_frame.pack(fill=tk.X, pady=(0, 10))
-        
+
         self.status_indicator = tk.Canvas(self.status_frame, width=10, height=10, bg=self.bg_dark, highlightthickness=0)
         self.status_indicator.pack(side=tk.LEFT, padx=(0, 8))
         self.status_dot = self.status_indicator.create_oval(1, 1, 9, 9, fill='#666', outline='')
-        
+
         self.status_label = ttk.Label(self.status_frame, text="Connecting...", style='Status.TLabel')
         self.status_label.pack(side=tk.LEFT)
-        
+
         # Notebook (tabs)
         self.notebook = ttk.Notebook(self.main_frame)
         self.notebook.pack(fill=tk.BOTH, expand=True, pady=(10, 0))
-        
+
         # Tab 1: Wallet
         self.wallet_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.wallet_tab, text='💰 Wallet')
         self.create_wallet_tab()
-        
+
         # Tab 2: History
         self.history_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.history_tab, text='📜 History')
         self.create_history_tab()
-        
+
         # Tab 3: Keys
         self.keys_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.keys_tab, text='🔐 Keys')
         self.create_keys_tab()
-        
+
         # Bottom status bar
         self.bottom_status = ttk.Label(self.main_frame, text="", style='Status.TLabel')
         self.bottom_status.pack(fill=tk.X, pady=(10, 0))
-    
+
     def create_wallet_tab(self):
         """Create the main wallet tab"""
         frame = self.wallet_tab
         frame.configure(style='TFrame')
-        
+
         # Add padding frame
         content = ttk.Frame(frame)
         content.pack(fill=tk.BOTH, expand=True, padx=20, pady=15)
-        
+
         # === BALANCE SECTION ===
-        self.balance_label = tk.Label(content, text="0", font=('Segoe UI', 42, 'bold'), 
-                                       fg='#2ecc71', bg=self.bg_dark)
+        self.balance_label = tk.Label(
+            content,
+            text="0",
+            font=('Segoe UI', 42, 'bold'),
+            fg='#2ecc71',
+            bg=self.bg_dark
+        )
         self.balance_label.pack(anchor=tk.W)
-        
-        self.fiat_label = tk.Label(content, text="sats", font=('Segoe UI', 14), 
-                                    fg='#888', bg=self.bg_dark)
+
+        self.fiat_label = tk.Label(
+            content,
+            text="sats",
+            font=('Segoe UI', 14),
+            fg='#888',
+            bg=self.bg_dark
+        )
         self.fiat_label.pack(anchor=tk.W, pady=(0, 25))
-        
+
         # === ADDRESS SECTION ===
         addr_container = tk.Frame(content, bg=self.bg_mid, padx=15, pady=15)
         addr_container.pack(fill=tk.X, pady=(0, 20))
-        
+
         # SegWit
-        tk.Label(addr_container, text="RECEIVE ADDRESS (SegWit)", font=('Segoe UI', 9, 'bold'),
-                 fg='#888', bg=self.bg_mid).pack(anchor=tk.W)
-        
+        tk.Label(
+            addr_container,
+            text="RECEIVE ADDRESS (SegWit)",
+            font=('Segoe UI', 9, 'bold'),
+            fg='#888',
+            bg=self.bg_mid
+        ).pack(anchor=tk.W)
+
         segwit_frame = tk.Frame(addr_container, bg=self.bg_mid)
         segwit_frame.pack(fill=tk.X, pady=(5, 10))
-        
+
         self.segwit_var = tk.StringVar(value="---")
-        self.segwit_entry = tk.Entry(segwit_frame, textvariable=self.segwit_var, 
-                                      font=('Consolas', 11), bg=self.bg_light, fg='#3498db',
-                                      relief=tk.FLAT, state='readonly', readonlybackground=self.bg_light)
+        self.segwit_entry = tk.Entry(
+            segwit_frame,
+            textvariable=self.segwit_var,
+            font=('Consolas', 11),
+            bg=self.bg_light,
+            fg='#3498db',
+            relief=tk.FLAT,
+            state='readonly',
+            readonlybackground=self.bg_light
+        )
         self.segwit_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, ipady=8)
-        
-        copy_segwit_btn = tk.Button(segwit_frame, text="Copy", font=('Segoe UI', 9),
-                                     bg=self.bg_light, fg='#fff', relief=tk.FLAT,
-                                     activebackground='#3498db', padx=15, pady=6,
-                                     command=self.copy_segwit)
+
+        copy_segwit_btn = tk.Button(
+            segwit_frame,
+            text="Copy",
+            font=('Segoe UI', 9),
+            bg=self.bg_light,
+            fg='#fff',
+            relief=tk.FLAT,
+            activebackground='#3498db',
+            padx=15,
+            pady=6,
+            command=self.copy_segwit
+        )
         copy_segwit_btn.pack(side=tk.RIGHT, padx=(10, 0))
-        
+
         # Legacy (smaller, less prominent)
-        tk.Label(addr_container, text="Legacy", font=('Segoe UI', 8),
-                 fg='#666', bg=self.bg_mid).pack(anchor=tk.W)
-        
+        tk.Label(
+            addr_container,
+            text="Legacy",
+            font=('Segoe UI', 8),
+            fg='#666',
+            bg=self.bg_mid
+        ).pack(anchor=tk.W)
+
         self.legacy_var = tk.StringVar(value="---")
         legacy_frame = tk.Frame(addr_container, bg=self.bg_mid)
         legacy_frame.pack(fill=tk.X, pady=(2, 0))
-        
-        self.legacy_entry = tk.Entry(legacy_frame, textvariable=self.legacy_var,
-                                      font=('Consolas', 9), bg=self.bg_mid, fg='#666',
-                                      relief=tk.FLAT, state='readonly', readonlybackground=self.bg_mid)
+
+        self.legacy_entry = tk.Entry(
+            legacy_frame,
+            textvariable=self.legacy_var,
+            font=('Consolas', 9),
+            bg=self.bg_mid,
+            fg='#666',
+            relief=tk.FLAT,
+            state='readonly',
+            readonlybackground=self.bg_mid
+        )
         self.legacy_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        
-        copy_legacy_btn = tk.Button(legacy_frame, text="Copy", font=('Segoe UI', 8),
-                                     bg=self.bg_mid, fg='#666', relief=tk.FLAT,
-                                     activebackground='#555', padx=10,
-                                     command=self.copy_legacy)
+
+        copy_legacy_btn = tk.Button(
+            legacy_frame,
+            text="Copy",
+            font=('Segoe UI', 8),
+            bg=self.bg_mid,
+            fg='#666',
+            relief=tk.FLAT,
+            activebackground='#555',
+            padx=10,
+            command=self.copy_legacy
+        )
         copy_legacy_btn.pack(side=tk.RIGHT)
-        
+
         # === QR CODE ===
         qr_frame = tk.Frame(addr_container, bg=self.bg_mid)
         qr_frame.pack(pady=(15, 0))
-        
-        self.qr_canvas = tk.Canvas(qr_frame, width=150, height=150, bg='white', 
-                                    highlightthickness=0)
+
+        self.qr_canvas = tk.Canvas(
+            qr_frame,
+            width=150,
+            height=150,
+            bg='white',
+            highlightthickness=0
+        )
         self.qr_canvas.pack()
         self.qr_canvas.create_text(75, 75, text="QR", fill='#ccc', font=('Segoe UI', 12))
-        
+
         # === ACTION BUTTONS ===
         btn_frame = tk.Frame(content, bg=self.bg_dark)
         btn_frame.pack(fill=tk.X, pady=(10, 0))
-        
+
         buttons = [
             ("Send", self.show_send_dialog, '#e74c3c'),
             ("Sign", self.show_sign_dialog, '#9b59b6'),
             ("Refresh", self.refresh_balance, '#3498db'),
             ("Verify", self.verify_se050, '#27ae60'),
         ]
-        
+
         for text, cmd, color in buttons:
-            btn = tk.Button(btn_frame, text=text, font=('Segoe UI', 10, 'bold'),
-                           bg=color, fg='white', relief=tk.FLAT,
-                           activebackground=color, padx=20, pady=10,
-                           command=cmd)
+            btn = tk.Button(
+                btn_frame,
+                text=text,
+                font=('Segoe UI', 10, 'bold'),
+                bg=color,
+                fg='white',
+                relief=tk.FLAT,
+                activebackground=color,
+                padx=20,
+                pady=10,
+                command=cmd
+            )
             btn.pack(side=tk.LEFT, padx=(0, 10))
-        
-        # Monitor toggle (right side)
-        self.monitor_label = tk.Label(btn_frame, text="", font=('Segoe UI', 9),
-                                       fg='#888', bg=self.bg_dark)
-        self.monitor_label.pack(side=tk.RIGHT, padx=(0, 10))
-        
-        self.monitor_btn = tk.Button(btn_frame, text="● Monitor", font=('Segoe UI', 9),
-                                      bg=self.bg_mid, fg='#888', relief=tk.FLAT,
-                                      activebackground=self.bg_light, padx=15, pady=8,
-                                      command=self.toggle_monitor)
-        self.monitor_btn.pack(side=tk.RIGHT)
-    
+
     def create_history_tab(self):
         """Create the transaction history tab"""
         frame = self.history_tab
-        
+
         content = tk.Frame(frame, bg=self.bg_dark)
         content.pack(fill=tk.BOTH, expand=True, padx=20, pady=15)
-        
+
         # Header
         header = tk.Frame(content, bg=self.bg_dark)
         header.pack(fill=tk.X, pady=(0, 15))
-        
-        tk.Label(header, text="Transaction History", font=('Segoe UI', 14, 'bold'),
-                 fg='#fff', bg=self.bg_dark).pack(side=tk.LEFT)
-        
-        refresh_btn = tk.Button(header, text="↻ Refresh", font=('Segoe UI', 9),
-                                 bg=self.bg_mid, fg='#aaa', relief=tk.FLAT,
-                                 padx=12, pady=4, command=self.refresh_history)
+
+        tk.Label(
+            header,
+            text="Transaction History",
+            font=('Segoe UI', 14, 'bold'),
+            fg='#fff',
+            bg=self.bg_dark
+        ).pack(side=tk.LEFT)
+
+        refresh_btn = tk.Button(
+            header,
+            text="↻ Refresh",
+            font=('Segoe UI', 9),
+            bg=self.bg_mid,
+            fg='#aaa',
+            relief=tk.FLAT,
+            padx=12,
+            pady=4,
+            command=self.refresh_history
+        )
         refresh_btn.pack(side=tk.RIGHT)
-        
-        # Treeview container with rounded look
+
+        # Treeview container
         tree_container = tk.Frame(content, bg=self.bg_mid, padx=2, pady=2)
         tree_container.pack(fill=tk.BOTH, expand=True)
-        
+
         columns = ('date', 'type', 'amount', 'txid')
         self.history_tree = ttk.Treeview(tree_container, columns=columns, show='headings', height=15)
         self.history_tree.heading('date', text='Date')
@@ -322,133 +399,239 @@ class WalletGUI:
         self.history_tree.column('type', width=70, minwidth=60)
         self.history_tree.column('amount', width=120, minwidth=100)
         self.history_tree.column('txid', width=450, minwidth=200)
-        
+
         # Scrollbars
         yscroll = ttk.Scrollbar(tree_container, orient=tk.VERTICAL, command=self.history_tree.yview)
         xscroll = ttk.Scrollbar(tree_container, orient=tk.HORIZONTAL, command=self.history_tree.xview)
         self.history_tree.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
-        
+
         self.history_tree.grid(row=0, column=0, sticky='nsew')
         yscroll.grid(row=0, column=1, sticky='ns')
         xscroll.grid(row=1, column=0, sticky='ew')
-        
+
         tree_container.grid_rowconfigure(0, weight=1)
         tree_container.grid_columnconfigure(0, weight=1)
-        
+
         # Events
         self.history_tree.bind('<Double-1>', self.open_tx_in_explorer)
-        
+
         # Right-click menu
         self.history_menu = tk.Menu(self.root, tearoff=0, bg=self.bg_mid, fg='#fff')
         self.history_menu.add_command(label="Copy TXID", command=self.copy_selected_txid)
         self.history_menu.add_command(label="View in Explorer", command=self.open_selected_tx)
         self.history_tree.bind('<Button-3>', self.show_history_menu)
-        
+
         # Footer hint
-        tk.Label(content, text="Right-click for options · Double-click to open in browser",
-                 font=('Segoe UI', 9), fg='#666', bg=self.bg_dark).pack(pady=(10, 0))
-    
+        tk.Label(
+            content,
+            text="Right-click for options · Double-click to open in browser",
+            font=('Segoe UI', 9),
+            fg='#666',
+            bg=self.bg_dark
+        ).pack(pady=(10, 0))
+
     def create_keys_tab(self):
         """Create the key management tab"""
         frame = self.keys_tab
-        
+
         content = tk.Frame(frame, bg=self.bg_dark)
         content.pack(fill=tk.BOTH, expand=True, padx=20, pady=15)
-        
+
         # Current wallet card
         wallet_card = tk.Frame(content, bg=self.bg_mid, padx=20, pady=15)
         wallet_card.pack(fill=tk.X, pady=(0, 20))
-        
-        tk.Label(wallet_card, text="Current Wallet", font=('Segoe UI', 11, 'bold'),
-                 fg='#fff', bg=self.bg_mid).pack(anchor=tk.W, pady=(0, 10))
-        
-        self.key_info_text = tk.Text(wallet_card, height=5, font=('Consolas', 10), 
-                                      bg=self.bg_light, fg='#aaa', relief=tk.FLAT, 
-                                      padx=12, pady=10)
+
+        tk.Label(
+            wallet_card,
+            text="Current Wallet",
+            font=('Segoe UI', 11, 'bold'),
+            fg='#fff',
+            bg=self.bg_mid
+        ).pack(anchor=tk.W, pady=(0, 10))
+
+        self.key_info_text = tk.Text(
+            wallet_card,
+            height=5,
+            font=('Consolas', 10),
+            bg=self.bg_light,
+            fg='#aaa',
+            relief=tk.FLAT,
+            padx=12,
+            pady=10
+        )
         self.key_info_text.pack(fill=tk.X)
         self.key_info_text.config(state='disabled')
-        
+
         # Key slot selector card
         slot_card = tk.Frame(content, bg=self.bg_mid, padx=20, pady=15)
         slot_card.pack(fill=tk.X, pady=(0, 20))
-        
-        tk.Label(slot_card, text="Key Slot", font=('Segoe UI', 11, 'bold'),
-                 fg='#fff', bg=self.bg_mid).pack(anchor=tk.W, pady=(0, 10))
-        
+
+        tk.Label(
+            slot_card,
+            text="Key Slot",
+            font=('Segoe UI', 11, 'bold'),
+            fg='#fff',
+            bg=self.bg_mid
+        ).pack(anchor=tk.W, pady=(0, 10))
+
         slot_row = tk.Frame(slot_card, bg=self.bg_mid)
         slot_row.pack(fill=tk.X)
-        
-        tk.Label(slot_row, text="ID: 0x", font=('Consolas', 11), 
-                 fg='#888', bg=self.bg_mid).pack(side=tk.LEFT)
-        
+
+        tk.Label(
+            slot_row,
+            text="ID: 0x",
+            font=('Consolas', 11),
+            fg='#888',
+            bg=self.bg_mid
+        ).pack(side=tk.LEFT)
+
         self.keyid_var = tk.StringVar(value=Config.KEY_ID)
-        keyid_entry = tk.Entry(slot_row, textvariable=self.keyid_var, font=('Consolas', 11),
-                               bg=self.bg_light, fg='#fff', relief=tk.FLAT, width=12,
-                               insertbackground='#fff')
+        keyid_entry = tk.Entry(
+            slot_row,
+            textvariable=self.keyid_var,
+            font=('Consolas', 11),
+            bg=self.bg_light,
+            fg='#fff',
+            relief=tk.FLAT,
+            width=12,
+            insertbackground='#fff'
+        )
         keyid_entry.pack(side=tk.LEFT, padx=(0, 15), ipady=6)
-        
-        tk.Button(slot_row, text="Load", font=('Segoe UI', 9), bg='#3498db', fg='#fff',
-                  relief=tk.FLAT, padx=15, pady=6, command=self.load_key_slot).pack(side=tk.LEFT, padx=(0, 5))
-        
-        tk.Button(slot_row, text="Check", font=('Segoe UI', 9), bg=self.bg_light, fg='#aaa',
-                  relief=tk.FLAT, padx=15, pady=6, command=self.check_key_slot).pack(side=tk.LEFT)
-        
-        tk.Label(slot_card, text="Common: 20000001, 20000002, 20000003", 
-                 font=('Segoe UI', 9), fg='#666', bg=self.bg_mid).pack(anchor=tk.W, pady=(10, 0))
-        
+
+        tk.Button(
+            slot_row,
+            text="Load",
+            font=('Segoe UI', 9),
+            bg='#3498db',
+            fg='#fff',
+            relief=tk.FLAT,
+            padx=15,
+            pady=6,
+            command=self.load_key_slot
+        ).pack(side=tk.LEFT, padx=(0, 5))
+
+        tk.Button(
+            slot_row,
+            text="Check",
+            font=('Segoe UI', 9),
+            bg=self.bg_light,
+            fg='#aaa',
+            relief=tk.FLAT,
+            padx=15,
+            pady=6,
+            command=self.check_key_slot
+        ).pack(side=tk.LEFT)
+
+        tk.Label(
+            slot_card,
+            text="Common: 20000001, 20000002, 20000003",
+            font=('Segoe UI', 9),
+            fg='#666',
+            bg=self.bg_mid
+        ).pack(anchor=tk.W, pady=(10, 0))
+
         # Actions card
         action_card = tk.Frame(content, bg=self.bg_mid, padx=20, pady=15)
         action_card.pack(fill=tk.X, pady=(0, 20))
-        
-        tk.Label(action_card, text="Actions", font=('Segoe UI', 11, 'bold'),
-                 fg='#fff', bg=self.bg_mid).pack(anchor=tk.W, pady=(0, 10))
-        
+
+        tk.Label(
+            action_card,
+            text="Actions",
+            font=('Segoe UI', 11, 'bold'),
+            fg='#fff',
+            bg=self.bg_mid
+        ).pack(anchor=tk.W, pady=(0, 10))
+
         btn_row = tk.Frame(action_card, bg=self.bg_mid)
         btn_row.pack(fill=tk.X)
-        
-        tk.Button(btn_row, text="+ New Wallet", font=('Segoe UI', 10, 'bold'),
-                  bg='#27ae60', fg='#fff', relief=tk.FLAT, padx=15, pady=8,
-                  command=self.init_new_wallet).pack(side=tk.LEFT, padx=(0, 10))
-        
-        tk.Button(btn_row, text="Export Pubkey", font=('Segoe UI', 10),
-                  bg=self.bg_light, fg='#aaa', relief=tk.FLAT, padx=15, pady=8,
-                  command=self.export_pubkey).pack(side=tk.LEFT, padx=(0, 10))
-        
-        tk.Button(btn_row, text="⚠ Wipe Key", font=('Segoe UI', 10),
-                  bg='#c0392b', fg='#fff', relief=tk.FLAT, padx=15, pady=8,
-                  command=self.wipe_key).pack(side=tk.LEFT)
-        
+
+        tk.Button(
+            btn_row,
+            text="+ New Wallet",
+            font=('Segoe UI', 10, 'bold'),
+            bg='#27ae60',
+            fg='#fff',
+            relief=tk.FLAT,
+            padx=15,
+            pady=8,
+            command=self.init_new_wallet
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        tk.Button(
+            btn_row,
+            text="Export Pubkey",
+            font=('Segoe UI', 10),
+            bg=self.bg_light,
+            fg='#aaa',
+            relief=tk.FLAT,
+            padx=15,
+            pady=8,
+            command=self.export_pubkey
+        ).pack(side=tk.LEFT, padx=(0, 10))
+
+        tk.Button(
+            btn_row,
+            text="⚠ Wipe Key",
+            font=('Segoe UI', 10),
+            bg='#c0392b',
+            fg='#fff',
+            relief=tk.FLAT,
+            padx=15,
+            pady=8,
+            command=self.wipe_key
+        ).pack(side=tk.LEFT)
+
         # SE050 status card
         se050_card = tk.Frame(content, bg=self.bg_mid, padx=20, pady=15)
         se050_card.pack(fill=tk.X)
-        
+
         se050_header = tk.Frame(se050_card, bg=self.bg_mid)
         se050_header.pack(fill=tk.X, pady=(0, 10))
-        
-        tk.Label(se050_header, text="SE050 Status", font=('Segoe UI', 11, 'bold'),
-                 fg='#fff', bg=self.bg_mid).pack(side=tk.LEFT)
-        
-        tk.Button(se050_header, text="↻", font=('Segoe UI', 10), bg=self.bg_mid, fg='#888',
-                  relief=tk.FLAT, padx=8, command=self.refresh_se050_info).pack(side=tk.RIGHT)
-        
-        self.se050_info_text = tk.Text(se050_card, height=3, font=('Consolas', 10),
-                                        bg=self.bg_light, fg='#aaa', relief=tk.FLAT,
-                                        padx=12, pady=10)
+
+        tk.Label(
+            se050_header,
+            text="SE050 Status",
+            font=('Segoe UI', 11, 'bold'),
+            fg='#fff',
+            bg=self.bg_mid
+        ).pack(side=tk.LEFT)
+
+        tk.Button(
+            se050_header,
+            text="↻",
+            font=('Segoe UI', 10),
+            bg=self.bg_mid,
+            fg='#888',
+            relief=tk.FLAT,
+            padx=8,
+            command=self.refresh_se050_info
+        ).pack(side=tk.RIGHT)
+
+        self.se050_info_text = tk.Text(
+            se050_card,
+            height=3,
+            font=('Consolas', 10),
+            bg=self.bg_light,
+            fg='#aaa',
+            relief=tk.FLAT,
+            padx=12,
+            pady=10
+        )
         self.se050_info_text.pack(fill=tk.X)
         self.se050_info_text.config(state='disabled')
-        
+
     def initial_load(self):
         """Initial connection and wallet load"""
         self.set_status("Connecting to SE050...", 'yellow')
         threading.Thread(target=self._connect_and_load, daemon=True).start()
-    
+
     def _connect_and_load(self):
         """Background thread: connect and load wallet"""
         try:
             if se050_connect():
                 self.connected = True
                 self.root.after(0, lambda: self.set_status("SE050 Connected", 'green'))
-                
+
                 if self.wallet.load():
                     self.root.after(0, self.update_wallet_display)
                     self.root.after(0, self.update_key_info)
@@ -464,36 +647,41 @@ class WalletGUI:
         except Exception as e:
             err_msg = str(e)
             self.root.after(0, lambda: self.set_status(f"Error: {err_msg}", 'red'))
-    
+
     def set_status(self, text, color='gray'):
         """Update status indicator"""
-        colors = {'green': '#2ecc71', 'red': '#e74c3c', 'yellow': '#f1c40f', 'orange': '#e67e22', 'gray': '#666'}
+        colors = {
+            'green': '#2ecc71',
+            'red': '#e74c3c',
+            'yellow': '#f1c40f',
+            'orange': '#e67e22',
+            'gray': '#666'
+        }
         self.status_label.config(text=text)
         self.status_indicator.itemconfig(self.status_dot, fill=colors.get(color, '#666'))
-    
+
     def update_wallet_display(self):
         """Update UI with wallet data"""
         if not self.wallet.addresses:
             return
-            
+
         self.segwit_var.set(self.wallet.addresses['segwit'])
         self.legacy_var.set(self.wallet.addresses['legacy'])
         self.update_qr()
-    
+
     def update_qr(self):
         """Update QR code display"""
         if not self.wallet.addresses:
             return
-            
+
         addr = self.wallet.addresses['segwit']
-        
+
         if HAS_QR:
             try:
                 qr = qrcode.QRCode(version=1, box_size=5, border=2)
                 qr.add_data(addr)
                 qr.make(fit=True)
                 img = qr.make_image(fill_color="black", back_color="white").convert('RGB')
-                # Resize to fit canvas (150x150, leave 2px margin)
                 img = img.resize((146, 146))
                 self.qr_image = ImageTk.PhotoImage(img)
                 self.qr_canvas.delete("all")
@@ -503,16 +691,22 @@ class WalletGUI:
                 self.qr_canvas.create_text(75, 75, text=f"QR Error:\n{e}", fill='red', width=140)
         else:
             self.qr_canvas.delete("all")
-            self.qr_canvas.create_text(75, 75, text="Install qrcode+pillow\nfor QR display", fill='#666', width=140)
-    
+            self.qr_canvas.create_text(
+                75,
+                75,
+                text="Install qrcode+pillow\nfor QR display",
+                fill='#666',
+                width=140
+            )
+
     def refresh_balance(self):
         """Refresh balance from API"""
         if not self.wallet.addresses:
             return
-        
+
         self.bottom_status.config(text="Fetching balance...")
         threading.Thread(target=self._fetch_balance, daemon=True).start()
-    
+
     def _fetch_balance(self):
         """Background thread: fetch balance"""
         try:
@@ -523,131 +717,46 @@ class WalletGUI:
                     funded = info['chain_stats']['funded_txo_sum']
                     spent = info['chain_stats']['spent_txo_sum']
                     total += funded - spent
-            
+
             self.balance_sats = total
             self.btc_price = get_btc_price('USD')
-            
+
             self.root.after(0, self._update_balance_display)
         except Exception as e:
             err_msg = str(e)
             self.root.after(0, lambda: self.bottom_status.config(text=f"Error: {err_msg}"))
-    
+
     def _update_balance_display(self):
         """Update balance labels"""
         self.balance_label.config(text=f"{self.balance_sats:,}")
-        
+
         if self.btc_price and self.balance_sats > 0:
             fiat = (self.balance_sats / 1e8) * self.btc_price
             self.fiat_label.config(text=f"sats  ≈  ${fiat:,.2f} USD")
         else:
             btc = self.balance_sats / 1e8
             self.fiat_label.config(text=f"sats  =  {btc:.8f} BTC")
-        
+
         fees = get_fee_estimates()
-        self.bottom_status.config(text=f"Network fees: {fees.get('fastestFee', '?')} sat/vB fast · {fees.get('hourFee', '?')} sat/vB slow")
-    
-    def toggle_monitor(self):
-        """Toggle balance monitoring on/off"""
-        if self.monitoring:
-            self.monitoring = False
-            self.monitor_btn.config(text="● Monitor", fg='#888')
-            self.monitor_label.config(text="")
-            self.bottom_status.config(text="Monitoring stopped")
-        else:
-            self.monitoring = True
-            self.last_balance = self.balance_sats
-            self.monitor_btn.config(text="■ Stop", fg='#e74c3c')
-            self.bottom_status.config(text="Monitoring started...")
-            self.monitor_countdown = self.monitor_interval
-            self.monitor_loop()
-    
-    def monitor_loop(self):
-        """Periodic balance check loop"""
-        if not self.monitoring:
-            return
-        
-        self.monitor_countdown -= 1
-        
-        if self.monitor_countdown <= 0:
-            # Time to check
-            self.monitor_label.config(text="checking...")
-            threading.Thread(target=self._monitor_check, daemon=True).start()
-            self.monitor_countdown = self.monitor_interval
-        else:
-            self.monitor_label.config(text=f"next: {self.monitor_countdown}s")
-        
-        # Schedule next tick
-        if self.monitoring:
-            self.root.after(1000, self.monitor_loop)
-    
-    def _monitor_check(self):
-        """Background thread: check balance for changes"""
-        try:
-            total = 0
-            for addr in [self.wallet.addresses['segwit'], self.wallet.addresses['legacy']]:
-                info = get_address_info(addr)
-                if info:
-                    funded = info['chain_stats']['funded_txo_sum']
-                    spent = info['chain_stats']['spent_txo_sum']
-                    total += funded - spent
-            
-            self.btc_price = get_btc_price('USD')
-            
-            # Check for changes
-            if total != self.last_balance:
-                diff = total - self.last_balance
-                self.last_balance = total
-                self.balance_sats = total
-                
-                # Update UI and notify
-                self.root.after(0, lambda: self._notify_balance_change(diff))
-            else:
-                self.root.after(0, lambda: self.monitor_label.config(text=f"next: {self.monitor_interval}s"))
-            
-            # Update display
-            self.root.after(0, self._update_balance_display)
-            
-        except Exception as e:
-            err_msg = str(e)
-            self.root.after(0, lambda: self.bottom_status.config(text=f"Monitor error: {err_msg}"))
-    
-    def _notify_balance_change(self, diff_sats):
-        """Notify user of balance change"""
-        self.last_balance = self.balance_sats
-        
-        if diff_sats > 0:
-            msg = f"💰 RECEIVED +{diff_sats:,} sats!"
-            self.balance_label.config(fg='#2ecc71')  # Bright green
-        else:
-            msg = f"📤 SENT {diff_sats:,} sats"
-            self.balance_label.config(fg='#e74c3c')  # Red
-        
-        self.bottom_status.config(text=msg)
-        
-        # Flash the window title
-        self.root.title(msg)
-        self.root.after(3000, lambda: self.root.title("SE050ARD Bitcoin Wallet"))
-        
-        # Reset balance color after delay
-        self.root.after(5000, lambda: self.balance_label.config(fg='#2ecc71'))
-        
-        # Show popup for received funds
-        if diff_sats > 0:
-            self.root.bell()  # System beep
-            messagebox.showinfo("Coins Received!", f"Received {diff_sats:,} sats\n\nNew balance: {self.balance_sats:,} sats")
-    
+        self.bottom_status.config(
+            text=(
+                f"Network fees: {fees.get('fastestFee', '?')} sat/vB fast · "
+                f"{fees.get('hourFee', '?')} sat/vB slow"
+            )
+        )
+
     def copy_segwit(self):
         """Copy SegWit address to clipboard"""
         self.root.clipboard_clear()
         self.root.clipboard_append(self.segwit_var.get())
         self.bottom_status.config(text="SegWit address copied!")
-    
+
     def copy_legacy(self):
         """Copy Legacy address to clipboard"""
         self.root.clipboard_clear()
         self.root.clipboard_append(self.legacy_var.get())
         self.bottom_status.config(text="Legacy address copied!")
-    
+
     # History tab methods
     def refresh_history(self):
         """Refresh transaction history"""
@@ -655,74 +764,80 @@ class WalletGUI:
             return
         self.bottom_status.config(text="Fetching transactions...")
         threading.Thread(target=self._fetch_history, daemon=True).start()
-    
+
     def _fetch_history(self):
         """Background thread: fetch transaction history"""
         try:
-            # Clear existing
             self.root.after(0, lambda: self.history_tree.delete(*self.history_tree.get_children()))
-            
+
             all_txs = []
             our_addresses = {self.wallet.addresses['segwit'], self.wallet.addresses['legacy']}
-            
+
             for addr in our_addresses:
                 txs = get_address_txs(addr, limit=50)
                 all_txs.extend(txs)
-            
-            # Dedupe
+
             seen = set()
             unique = []
             for tx in all_txs:
                 if tx['txid'] not in seen:
                     seen.add(tx['txid'])
                     unique.append(tx)
-            
-            # Sort by time
+
             unique.sort(key=lambda x: x.get('status', {}).get('block_time', 0), reverse=True)
-            
+
             for tx in unique[:50]:
                 status = tx.get('status', {})
                 block_time = status.get('block_time', 0)
-                confirmed = status.get('confirmed', False)
                 date_str = format_timestamp(block_time) if block_time else "⏳ Pending"
-                
-                # Calculate net
-                total_in = sum(v.get('value', 0) for v in tx.get('vout', []) if v.get('scriptpubkey_address') in our_addresses)
-                total_out = sum(vin.get('prevout', {}).get('value', 0) for vin in tx.get('vin', []) if vin.get('prevout', {}).get('scriptpubkey_address') in our_addresses)
+
+                total_in = sum(
+                    v.get('value', 0)
+                    for v in tx.get('vout', [])
+                    if v.get('scriptpubkey_address') in our_addresses
+                )
+                total_out = sum(
+                    vin.get('prevout', {}).get('value', 0)
+                    for vin in tx.get('vin', [])
+                    if vin.get('prevout', {}).get('scriptpubkey_address') in our_addresses
+                )
                 net = total_in - total_out
-                
+
                 if net > 0:
                     tx_type = "⬇ RECV"
                 elif net < 0:
                     tx_type = "⬆ SEND"
                 else:
                     tx_type = "↔ SELF"
-                
+
                 txid = tx['txid']
-                
-                self.root.after(0, lambda d=date_str, t=tx_type, a=net, tid=txid: 
-                    self.history_tree.insert('', tk.END, values=(d, t, f"{a:+,}", tid)))
-            
+
+                self.root.after(
+                    0,
+                    lambda d=date_str, t=tx_type, a=net, tid=txid:
+                        self.history_tree.insert('', tk.END, values=(d, t, f"{a:+,}", tid))
+                )
+
             self.root.after(0, lambda: self.bottom_status.config(text=f"Loaded {len(unique)} transactions"))
         except Exception as e:
             err_msg = str(e)
             self.root.after(0, lambda: self.bottom_status.config(text=f"Error: {err_msg}"))
-    
+
     def show_history_menu(self, event):
         """Show right-click menu for history"""
         item = self.history_tree.identify_row(event.y)
         if item:
             self.history_tree.selection_set(item)
             self.history_menu.post(event.x_root, event.y_root)
-    
+
     def get_selected_txid(self):
         """Get TXID of selected history item"""
         selection = self.history_tree.selection()
         if selection:
             item = self.history_tree.item(selection[0])
-            return item['values'][3]  # txid is 4th column
+            return item['values'][3]
         return None
-    
+
     def copy_selected_txid(self):
         """Copy selected transaction ID"""
         txid = self.get_selected_txid()
@@ -730,19 +845,19 @@ class WalletGUI:
             self.root.clipboard_clear()
             self.root.clipboard_append(txid)
             self.bottom_status.config(text=f"Copied: {txid[:16]}...")
-    
+
     def open_selected_tx(self):
         """Open selected transaction in explorer"""
         txid = self.get_selected_txid()
         if txid:
             self.open_tx_url(txid)
-    
+
     def open_tx_in_explorer(self, event):
         """Double-click handler to open tx in explorer"""
         txid = self.get_selected_txid()
         if txid:
             self.open_tx_url(txid)
-    
+
     def open_tx_url(self, txid):
         """Open transaction in web browser"""
         import webbrowser
@@ -750,32 +865,32 @@ class WalletGUI:
         url = f"https://{explorer}/tx/{txid}"
         webbrowser.open(url)
         self.bottom_status.config(text=f"Opened {txid[:16]}... in browser")
-    
+
     # Keys tab methods
     def update_key_info(self):
         """Update key info display"""
         self.key_info_text.config(state='normal')
         self.key_info_text.delete('1.0', tk.END)
-        
+
         lines = []
         lines.append(f"  Key ID:     0x{Config.KEY_ID}")
         lines.append(f"  Network:    {Config.NETWORK}")
-        
+
         if self.wallet.addresses:
             lines.append(f"  SegWit:     {self.wallet.addresses['segwit']}")
             lines.append(f"  Legacy:     {self.wallet.addresses['legacy']}")
             lines.append(f"  Pubkey:     {self.wallet.pubkey_compressed.hex()[:32]}...")
         else:
             lines.append(f"  Status:     No wallet loaded")
-        
+
         self.key_info_text.insert('1.0', '\n'.join(lines))
         self.key_info_text.config(state='disabled')
-    
+
     def refresh_se050_info(self):
         """Refresh SE050 status info"""
         self.bottom_status.config(text="Querying SE050...")
         threading.Thread(target=self._fetch_se050_info, daemon=True).start()
-    
+
     def _fetch_se050_info(self):
         """Background: get SE050 info"""
         lines = []
@@ -783,21 +898,17 @@ class WalletGUI:
             uid = se050_get_uid()
             if uid:
                 lines.append(f"  UID:    {uid}")
-            
-            rng = se050_get_random()
-            if rng:
-                lines.append(f"  TRNG:   {rng.hex()[:24]}...")
-            
+
             if se050_key_exists(Config.KEY_ID):
                 lines.append(f"  Key 0x{Config.KEY_ID}: Present ✓")
             else:
                 lines.append(f"  Key 0x{Config.KEY_ID}: Not found")
-            
+
             self.root.after(0, lambda: self._update_se050_display(lines))
         except Exception as e:
             err_msg = str(e)
             self.root.after(0, lambda: self._update_se050_display([f"  Error: {err_msg}"]))
-    
+
     def _update_se050_display(self, lines):
         """Update SE050 info display"""
         self.se050_info_text.config(state='normal')
@@ -805,17 +916,17 @@ class WalletGUI:
         self.se050_info_text.insert('1.0', '\n'.join(lines))
         self.se050_info_text.config(state='disabled')
         self.bottom_status.config(text="SE050 info updated")
-    
+
     def load_key_slot(self):
         """Load a different key slot"""
         new_keyid = self.keyid_var.get().strip()
         if not new_keyid:
             messagebox.showerror("Error", "Enter a key ID")
             return
-        
+
         Config.KEY_ID = new_keyid
         self.wallet = Wallet()
-        
+
         if self.wallet.load():
             self.update_wallet_display()
             self.update_key_info()
@@ -827,7 +938,7 @@ class WalletGUI:
             self.balance_label.config(text="--- sats")
             self.update_key_info()
             self.bottom_status.config(text=f"No wallet at slot 0x{new_keyid}")
-    
+
     def check_key_slot(self):
         """Check if key exists in SE050"""
         keyid = self.keyid_var.get().strip()
@@ -835,396 +946,539 @@ class WalletGUI:
             messagebox.showinfo("Key Check", f"Key 0x{keyid} EXISTS in SE050")
         else:
             messagebox.showinfo("Key Check", f"Key 0x{keyid} NOT FOUND in SE050")
-    
+
     def init_new_wallet(self):
         """Initialize new wallet at current key slot"""
         keyid = self.keyid_var.get().strip()
-        
-        # Check if key already exists
+
         if se050_key_exists(keyid):
-            if not messagebox.askyesno("Warning", f"Key 0x{keyid} already exists!\n\nThis will generate a NEW key,\noverwriting the existing one.\n\nContinue?"):
+            if not messagebox.askyesno(
+                "Warning",
+                f"Key 0x{keyid} already exists!\n\nThis will generate a NEW key,\n"
+                f"overwriting the existing one.\n\nContinue?"
+            ):
                 return
-        
+
         msg = f"Initialize NEW wallet at key slot 0x{keyid}?\n\n"
         msg += "This will:\n"
         msg += "• Generate a new private key on SE050\n"
         msg += "• Create new Bitcoin addresses\n\n"
-        msg += "⚠️ There is NO seed phrase backup!"
-        
+        msg += "!!! There is NO seed phrase backup!"
+
         if not messagebox.askyesno("Confirm Init", msg):
             return
-        
+
         Config.KEY_ID = keyid
         self.bottom_status.config(text="Generating key on SE050...")
         threading.Thread(target=self._init_wallet, daemon=True).start()
-    
+
     def _init_wallet(self):
         """Background: init wallet"""
         try:
-            # Generate keypair
             if not se050_generate_keypair(Config.KEY_ID):
                 self.root.after(0, lambda: messagebox.showerror("Error", "Key generation failed"))
                 return
-            
-            # Export public key
+
             pubkey_path = Config.pubkey_der_path()
             if not se050_export_pubkey(Config.KEY_ID, pubkey_path, "DER"):
                 self.root.after(0, lambda: messagebox.showerror("Error", "Pubkey export failed"))
                 return
-            
-            # Load wallet
+
             self.wallet = Wallet()
             if self.wallet.load():
                 self.root.after(0, self.update_wallet_display)
                 self.root.after(0, self.update_key_info)
-                self.root.after(0, lambda: messagebox.showinfo("Success", 
-                    f"Wallet created!\n\nKey ID: 0x{Config.KEY_ID}\n"
-                    f"SegWit: {self.wallet.addresses['segwit'][:20]}...\n\n"
-                    f"⚠️ No seed phrase - backup the SE050!"))
+                self.root.after(
+                    0,
+                    lambda: messagebox.showinfo(
+                        "Success",
+                        f"Wallet created!\n\nKey ID: 0x{Config.KEY_ID}\n"
+                        f"SegWit: {self.wallet.addresses['segwit'][:20]}...\n\n"
+                        f"No seed phrase - if you lose your hardware.. game over..."
+                    )
+                )
             else:
                 self.root.after(0, lambda: messagebox.showerror("Error", "Failed to load new wallet"))
         except Exception as e:
             err_msg = str(e)
             self.root.after(0, lambda: messagebox.showerror("Error", f"Init failed: {err_msg}"))
-    
+
     def export_pubkey(self):
         """Export public key info"""
         if not self.wallet.addresses:
             messagebox.showerror("Error", "No wallet loaded")
             return
-        
+
         info = f"Key ID: 0x{Config.KEY_ID}\n"
         info += f"Network: {Config.NETWORK}\n\n"
         info += f"Compressed Pubkey (hex):\n{self.wallet.pubkey_compressed.hex()}\n\n"
         info += f"SegWit Address:\n{self.wallet.addresses['segwit']}\n\n"
         info += f"Legacy Address:\n{self.wallet.addresses['legacy']}"
-        
-        # Show in dialog with copy button
+
         dialog = tk.Toplevel(self.root)
         dialog.title("Public Key Export")
         dialog.geometry("520x380")
         dialog.configure(bg=self.bg_dark)
-        
+
         content = tk.Frame(dialog, bg=self.bg_dark, padx=20, pady=20)
         content.pack(fill=tk.BOTH, expand=True)
-        
-        tk.Label(content, text="Public Key Export", font=('Segoe UI', 14, 'bold'),
-                 fg=self.accent, bg=self.bg_dark).pack(anchor=tk.W, pady=(0, 15))
-        
-        text = tk.Text(content, font=('Consolas', 10), bg=self.bg_mid, fg='#aaa', 
-                       relief=tk.FLAT, padx=12, pady=12)
+
+        tk.Label(
+            content,
+            text="Public Key Export",
+            font=('Segoe UI', 14, 'bold'),
+            fg=self.accent,
+            bg=self.bg_dark
+        ).pack(anchor=tk.W, pady=(0, 15))
+
+        text = tk.Text(
+            content,
+            font=('Consolas', 10),
+            bg=self.bg_mid,
+            fg='#aaa',
+            relief=tk.FLAT,
+            padx=12,
+            pady=12
+        )
         text.pack(fill=tk.BOTH, expand=True)
         text.insert('1.0', info)
         text.config(state='disabled')
-        
+
         def copy_all():
             self.root.clipboard_clear()
             self.root.clipboard_append(info)
             self.bottom_status.config(text="Public key info copied!")
-        
-        tk.Button(content, text="Copy All", font=('Segoe UI', 10),
-                  bg=self.accent_blue, fg='white', relief=tk.FLAT,
-                  padx=15, pady=8, command=copy_all).pack(pady=(15, 0))
-    
+
+        tk.Button(
+            content,
+            text="Copy All",
+            font=('Segoe UI', 10),
+            bg=self.accent_blue,
+            fg='white',
+            relief=tk.FLAT,
+            padx=15,
+            pady=8,
+            command=copy_all
+        ).pack(pady=(15, 0))
+
     def wipe_key(self):
         """Wipe key from SE050"""
         keyid = self.keyid_var.get().strip()
-        
+
         msg = f"⚠️ DANGER: WIPE KEY 0x{keyid}? ⚠️\n\n"
         msg += "This will PERMANENTLY DELETE:\n"
         msg += "• The private key from SE050\n"
         msg += "• All access to funds at this address\n\n"
         msg += "This CANNOT be undone!\n\n"
         msg += "Type 'WIPE' to confirm:"
-        
+
         confirm = simpledialog.askstring("Confirm Wipe", msg, parent=self.root)
         if confirm != "WIPE":
             self.bottom_status.config(text="Wipe cancelled")
             return
-        
+
         try:
             se050_delete_key(keyid)
-            
-            # Delete local files
+
             for path in [Config.pubkey_der_path(), Config.pubkey_pem_path(), Config.wallet_info_path()]:
                 if path.exists():
                     path.unlink()
-            
+
             self.wallet = Wallet()
             self.segwit_var.set("---")
             self.legacy_var.set("---")
             self.balance_label.config(text="--- sats")
             self.update_key_info()
-            
+
             messagebox.showinfo("Wiped", f"Key 0x{keyid} has been wiped")
         except Exception as e:
             messagebox.showerror("Error", f"Wipe failed: {e}")
-    
+
     def show_send_dialog(self):
         """Show send transaction dialog"""
         if not self.wallet.addresses:
             messagebox.showerror("Error", "No wallet loaded")
             return
-        
+
         dialog = SendDialog(self.root, self)
         self.root.wait_window(dialog.top)
-    
+
     def show_sign_dialog(self):
         """Show message signing dialog"""
         if not self.wallet.addresses:
             messagebox.showerror("Error", "No wallet loaded")
             return
-        
+
         message = simpledialog.askstring("Sign Message", "Enter message to sign:", parent=self.root)
         if not message:
             return
-        
+
         self.bottom_status.config(text="Signing with SE050...")
         threading.Thread(target=lambda: self._sign_message(message), daemon=True).start()
-    
+
     def _sign_message(self, message):
         """Background thread: sign message"""
         try:
             if not se050_connect():
                 self.root.after(0, lambda: messagebox.showerror("Error", "SE050 connection failed"))
                 return
-            
+
             (r, s), recovery_id = sign_message_with_se050(Config.KEY_ID, message)
             signature = encode_signed_message(r, s, recovery_id, compressed=True)
-            
-            # Show result
+
             self.root.after(0, lambda: self._show_signature_result(message, signature))
         except Exception as e:
             err_msg = str(e)
             self.root.after(0, lambda: messagebox.showerror("Error", f"Signing failed: {err_msg}"))
-    
+
     def _show_signature_result(self, message, signature):
         """Show signed message result"""
         result_window = tk.Toplevel(self.root)
         result_window.title("Signed Message")
         result_window.geometry("520x320")
         result_window.configure(bg=self.bg_dark)
-        
+
         content = tk.Frame(result_window, bg=self.bg_dark, padx=20, pady=20)
         content.pack(fill=tk.BOTH, expand=True)
-        
-        tk.Label(content, text="Signed Message", font=('Segoe UI', 14, 'bold'),
-                 fg=self.accent, bg=self.bg_dark).pack(anchor=tk.W, pady=(0, 15))
-        
-        # Message
-        tk.Label(content, text="MESSAGE", font=('Segoe UI', 9),
-                 fg=self.fg_dim, bg=self.bg_dark).pack(anchor=tk.W)
-        msg_text = tk.Text(content, height=2, font=('Consolas', 10), 
-                           bg=self.bg_mid, fg='#aaa', relief=tk.FLAT, padx=8, pady=8)
+
+        tk.Label(
+            content,
+            text="Signed Message",
+            font=('Segoe UI', 14, 'bold'),
+            fg=self.accent,
+            bg=self.bg_dark
+        ).pack(anchor=tk.W, pady=(0, 15))
+
+        tk.Label(content, text="MESSAGE", font=('Segoe UI', 9), fg=self.fg_dim, bg=self.bg_dark).pack(anchor=tk.W)
+        msg_text = tk.Text(
+            content,
+            height=2,
+            font=('Consolas', 10),
+            bg=self.bg_mid,
+            fg='#aaa',
+            relief=tk.FLAT,
+            padx=8,
+            pady=8
+        )
         msg_text.insert(tk.END, message)
         msg_text.config(state='disabled')
         msg_text.pack(fill=tk.X, pady=(2, 10))
-        
-        # Address
-        tk.Label(content, text="ADDRESS", font=('Segoe UI', 9),
-                 fg=self.fg_dim, bg=self.bg_dark).pack(anchor=tk.W)
-        tk.Label(content, text=self.wallet.addresses['legacy'], font=('Consolas', 10),
-                 fg=self.accent_blue, bg=self.bg_dark).pack(anchor=tk.W, pady=(2, 10))
-        
-        # Signature
-        tk.Label(content, text="SIGNATURE", font=('Segoe UI', 9),
-                 fg=self.fg_dim, bg=self.bg_dark).pack(anchor=tk.W)
-        sig_text = tk.Text(content, height=2, font=('Consolas', 10),
-                           bg=self.bg_mid, fg='#aaa', relief=tk.FLAT, padx=8, pady=8)
+
+        tk.Label(content, text="ADDRESS", font=('Segoe UI', 9), fg=self.fg_dim, bg=self.bg_dark).pack(anchor=tk.W)
+        tk.Label(
+            content,
+            text=self.wallet.addresses['legacy'],
+            font=('Consolas', 10),
+            fg=self.accent_blue,
+            bg=self.bg_dark
+        ).pack(anchor=tk.W, pady=(2, 10))
+
+        tk.Label(content, text="SIGNATURE", font=('Segoe UI', 9), fg=self.fg_dim, bg=self.bg_dark).pack(anchor=tk.W)
+        sig_text = tk.Text(
+            content,
+            height=2,
+            font=('Consolas', 10),
+            bg=self.bg_mid,
+            fg='#aaa',
+            relief=tk.FLAT,
+            padx=8,
+            pady=8
+        )
         sig_text.insert(tk.END, signature)
         sig_text.config(state='disabled')
         sig_text.pack(fill=tk.X, pady=(2, 15))
-        
+
         def copy_sig():
             self.root.clipboard_clear()
             self.root.clipboard_append(signature)
             self.bottom_status.config(text="Signature copied!")
-        
-        tk.Button(content, text="Copy Signature", font=('Segoe UI', 10),
-                  bg=self.accent_blue, fg='white', relief=tk.FLAT,
-                  padx=15, pady=8, command=copy_sig).pack()
-        
+
+        tk.Button(
+            content,
+            text="Copy Signature",
+            font=('Segoe UI', 10),
+            bg=self.accent_blue,
+            fg='white',
+            relief=tk.FLAT,
+            padx=15,
+            pady=8,
+            command=copy_sig
+        ).pack()
+
         self.bottom_status.config(text="Message signed!")
-    
+
     def verify_se050(self):
         """Verify SE050 is working"""
         self.bottom_status.config(text="Verifying SE050...")
         threading.Thread(target=self._verify_se050, daemon=True).start()
-    
+
     def _verify_se050(self):
         """Background thread: verify SE050"""
         results = []
-        
+
         try:
-            # Test connection
             if se050_connect():
                 results.append("✓ SE050 Connected")
             else:
                 results.append("✗ Connection Failed")
                 self.root.after(0, lambda: self._show_verify_results(results, False))
                 return
-            
-            # Test UID
+
             uid = se050_get_uid()
             if uid:
                 results.append(f"✓ UID: {uid[:16]}...")
-            
-            # Test TRNG
-            rng = se050_get_random()
-            if rng:
-                results.append(f"✓ TRNG: {rng.hex()[:16]}...")
-            
-            # Test key exists
+
             if se050_key_exists(Config.KEY_ID):
                 results.append(f"✓ Key 0x{Config.KEY_ID} present")
             else:
                 results.append(f"✗ Key 0x{Config.KEY_ID} not found")
-            
-            # Test signing
+
             test_hash = sha256(f"verify-{datetime.now().isoformat()}".encode())
             sig = se050_sign(Config.KEY_ID, test_hash)
             if sig and len(sig) > 60:
                 results.append(f"✓ Signature generated ({len(sig)} bytes)")
-            
+
             self.root.after(0, lambda: self._show_verify_results(results, True))
-            
+
         except Exception as e:
             results.append(f"✗ Error: {e}")
             self.root.after(0, lambda: self._show_verify_results(results, False))
-    
+
     def _show_verify_results(self, results, success):
         """Show verification results"""
         title = "Verification Passed" if success else "Verification Failed"
-        icon = messagebox.INFO if success else messagebox.ERROR
         messagebox.showinfo(title, "\n".join(results))
         self.bottom_status.config(text="Verification complete" if success else "Verification failed")
 
 
 class SendDialog:
     """Send transaction dialog"""
-    
+
     def __init__(self, parent, gui):
         self.gui = gui
-        
+
         # Colors
         self.bg = '#0f0f1a'
         self.bg_card = '#1a1a2e'
         self.bg_input = '#252540'
         self.fg = '#e8e8e8'
         self.fg_dim = '#888'
-        
+
         self.top = tk.Toplevel(parent)
         self.top.title("Send Bitcoin")
-        self.top.geometry("500x520")
+        self.top.geometry("500x580")
         self.top.configure(bg=self.bg)
         self.top.transient(parent)
         self.top.grab_set()
-        
+
         # Cache price for consistent calculations
         self.cached_prices = {}
-        
+
         # Main content
         content = tk.Frame(self.top, bg=self.bg, padx=25, pady=20)
         content.pack(fill=tk.BOTH, expand=True)
-        
+
         # Title
-        tk.Label(content, text="Send Bitcoin", font=('Segoe UI', 16, 'bold'),
-                 fg='#e74c3c', bg=self.bg).pack(anchor=tk.W, pady=(0, 20))
-        
+        tk.Label(
+            content,
+            text="Send Bitcoin",
+            font=('Segoe UI', 16, 'bold'),
+            fg='#e74c3c',
+            bg=self.bg
+        ).pack(anchor=tk.W, pady=(0, 20))
+
         # Destination
-        tk.Label(content, text="To Address", font=('Segoe UI', 10),
-                 fg=self.fg_dim, bg=self.bg).pack(anchor=tk.W)
+        tk.Label(
+            content,
+            text="To Address",
+            font=('Segoe UI', 10),
+            fg=self.fg_dim,
+            bg=self.bg
+        ).pack(anchor=tk.W)
         self.dest_var = tk.StringVar()
-        dest_entry = tk.Entry(content, textvariable=self.dest_var, font=('Consolas', 11),
-                              bg=self.bg_input, fg=self.fg, relief=tk.FLAT, insertbackground='#fff')
+        dest_entry = tk.Entry(
+            content,
+            textvariable=self.dest_var,
+            font=('Consolas', 11),
+            bg=self.bg_input,
+            fg=self.fg,
+            relief=tk.FLAT,
+            insertbackground='#fff'
+        )
         dest_entry.pack(fill=tk.X, ipady=10, pady=(5, 15))
-        
+
         # Amount row
         amount_row = tk.Frame(content, bg=self.bg)
         amount_row.pack(fill=tk.X, pady=(0, 15))
-        
+
         amount_col = tk.Frame(amount_row, bg=self.bg)
         amount_col.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        
-        tk.Label(amount_col, text="Amount", font=('Segoe UI', 10),
-                 fg=self.fg_dim, bg=self.bg).pack(anchor=tk.W)
-        
+
+        tk.Label(
+            amount_col,
+            text="Amount",
+            font=('Segoe UI', 10),
+            fg=self.fg_dim,
+            bg=self.bg
+        ).pack(anchor=tk.W)
+
         amount_input = tk.Frame(amount_col, bg=self.bg)
         amount_input.pack(fill=tk.X, pady=(5, 0))
-        
+
         self.amount_var = tk.StringVar()
-        amount_entry = tk.Entry(amount_input, textvariable=self.amount_var, font=('Consolas', 14),
-                                bg=self.bg_input, fg=self.fg, relief=tk.FLAT, width=12,
-                                insertbackground='#fff')
+        amount_entry = tk.Entry(
+            amount_input,
+            textvariable=self.amount_var,
+            font=('Consolas', 14),
+            bg=self.bg_input,
+            fg=self.fg,
+            relief=tk.FLAT,
+            width=12,
+            insertbackground='#fff'
+        )
         amount_entry.pack(side=tk.LEFT, ipady=8)
         amount_entry.bind('<KeyRelease>', lambda e: self.update_calculation())
-        
+
         self.unit_var = tk.StringVar(value="sats")
-        unit_combo = ttk.Combobox(amount_input, textvariable=self.unit_var, 
-                                   values=["sats", "BTC", "USD", "EUR", "GBP"], 
-                                   width=5, state='readonly', font=('Segoe UI', 10))
+        unit_combo = ttk.Combobox(
+            amount_input,
+            textvariable=self.unit_var,
+            values=["sats", "BTC", "USD", "EUR", "GBP"],
+            width=5,
+            state='readonly',
+            font=('Segoe UI', 10)
+        )
         unit_combo.pack(side=tk.LEFT, padx=(10, 0))
         unit_combo.bind('<<ComboboxSelected>>', lambda e: self.update_calculation())
-        
-        max_btn = tk.Button(amount_input, text="MAX", font=('Segoe UI', 9, 'bold'),
-                            bg='#3498db', fg='#fff', relief=tk.FLAT, padx=12, pady=6,
-                            command=self.set_max_amount)
+
+        max_btn = tk.Button(
+            amount_input,
+            text="MAX",
+            font=('Segoe UI', 9, 'bold'),
+            bg='#3498db',
+            fg='#fff',
+            relief=tk.FLAT,
+            padx=12,
+            pady=6,
+            command=self.set_max_amount
+        )
         max_btn.pack(side=tk.LEFT, padx=(10, 0))
-        
+
         # Fee row
-        fee_col = tk.Frame(amount_row, bg=self.bg, padx=(20, 0))
+        fee_col = tk.Frame(amount_row, bg=self.bg, padx=20)
         fee_col.pack(side=tk.LEFT)
-        
+
         fees = get_fee_estimates()
-        tk.Label(fee_col, text="Fee (sat/vB)", font=('Segoe UI', 10),
-                 fg=self.fg_dim, bg=self.bg).pack(anchor=tk.W)
-        
+        tk.Label(
+            fee_col,
+            text="Fee (sat/vB)",
+            font=('Segoe UI', 10),
+            fg=self.fg_dim,
+            bg=self.bg
+        ).pack(anchor=tk.W)
+
         self.fee_var = tk.StringVar(value=str(fees.get('halfHourFee', 10)))
-        fee_entry = tk.Entry(fee_col, textvariable=self.fee_var, font=('Consolas', 14),
-                             bg=self.bg_input, fg=self.fg, relief=tk.FLAT, width=5,
-                             insertbackground='#fff')
+        fee_entry = tk.Entry(
+            fee_col,
+            textvariable=self.fee_var,
+            font=('Consolas', 14),
+            bg=self.bg_input,
+            fg=self.fg,
+            relief=tk.FLAT,
+            width=5,
+            insertbackground='#fff'
+        )
         fee_entry.pack(ipady=8, pady=(5, 0))
         fee_entry.bind('<KeyRelease>', lambda e: self.update_calculation())
-        
+
+        # RBF checkbox
+        self.rbf_var = tk.BooleanVar(value=True)
+        rbf_frame = tk.Frame(content, bg=self.bg)
+        rbf_frame.pack(fill=tk.X, pady=(0, 10))
+        tk.Checkbutton(
+            rbf_frame,
+            text="Enable RBF (replace-by-fee)",
+            variable=self.rbf_var,
+            onvalue=True,
+            offvalue=False,
+            bg=self.bg,
+            fg=self.fg_dim,
+            selectcolor=self.bg,
+            activebackground=self.bg,
+            activeforeground=self.fg_dim
+        ).pack(anchor=tk.W)
+
         # Breakdown card
         breakdown_card = tk.Frame(content, bg=self.bg_card, padx=15, pady=15)
         breakdown_card.pack(fill=tk.X, pady=(5, 15))
-        
-        tk.Label(breakdown_card, text="Transaction Summary", font=('Segoe UI', 10, 'bold'),
-                 fg=self.fg, bg=self.bg_card).pack(anchor=tk.W, pady=(0, 10))
-        
-        self.calc_text = tk.Text(breakdown_card, height=7, font=('Consolas', 10), 
-                                  bg=self.bg_card, fg='#aaa', relief=tk.FLAT)
+
+        tk.Label(
+            breakdown_card,
+            text="Transaction Summary",
+            font=('Segoe UI', 10, 'bold'),
+            fg=self.fg,
+            bg=self.bg_card
+        ).pack(anchor=tk.W, pady=(0, 10))
+
+        self.calc_text = tk.Text(
+            breakdown_card,
+            height=8,
+            font=('Consolas', 10),
+            bg=self.bg_card,
+            fg='#aaa',
+            relief=tk.FLAT
+        )
         self.calc_text.pack(fill=tk.X)
         self.calc_text.config(state='disabled')
-        
+
         # Buttons
         btn_frame = tk.Frame(content, bg=self.bg)
         btn_frame.pack(fill=tk.X, pady=(10, 0))
-        
-        self.send_btn = tk.Button(btn_frame, text="Send", font=('Segoe UI', 11, 'bold'),
-                                   bg='#e74c3c', fg='#fff', relief=tk.FLAT, 
-                                   padx=30, pady=10, command=self.send)
+
+        self.send_btn = tk.Button(
+            btn_frame,
+            text="Send",
+            font=('Segoe UI', 11, 'bold'),
+            bg='#e74c3c',
+            fg='#fff',
+            relief=tk.FLAT,
+            padx=30,
+            pady=10,
+            command=self.send
+        )
         self.send_btn.pack(side=tk.LEFT, padx=(0, 10))
-        
-        cancel_btn = tk.Button(btn_frame, text="Cancel", font=('Segoe UI', 11),
-                                bg=self.bg_card, fg=self.fg_dim, relief=tk.FLAT,
-                                padx=20, pady=10, command=self.top.destroy)
+
+        cancel_btn = tk.Button(
+            btn_frame,
+            text="Cancel",
+            font=('Segoe UI', 11),
+            bg=self.bg_card,
+            fg=self.fg_dim,
+            relief=tk.FLAT,
+            padx=20,
+            pady=10,
+            command=self.top.destroy
+        )
         cancel_btn.pack(side=tk.LEFT)
-        
-        self.status_label = tk.Label(btn_frame, text="", font=('Segoe UI', 9),
-                                      fg=self.fg_dim, bg=self.bg)
+
+        self.status_label = tk.Label(
+            btn_frame,
+            text="",
+            font=('Segoe UI', 9),
+            fg=self.fg_dim,
+            bg=self.bg
+        )
         self.status_label.pack(side=tk.RIGHT)
-        
+
         # Initial calc
         self.update_calculation()
-    
+
     def get_price(self, currency):
         """Get cached price or fetch new one"""
         if currency not in self.cached_prices:
             self.cached_prices[currency] = get_btc_price(currency)
         return self.cached_prices[currency]
-    
+
     def sats_to_unit(self, sats, unit):
         """Convert sats to display unit"""
         if unit == "sats":
@@ -1238,13 +1492,13 @@ class SendDialog:
                 symbols = {"USD": "$", "EUR": "€", "GBP": "£"}
                 return f"{symbols.get(unit, '')}{fiat:.2f} {unit}"
             return f"{sats:,} sats"
-    
+
     def get_amount_sats(self):
         """Parse amount field and return sats"""
         amount_str = self.amount_var.get().strip()
         if not amount_str:
             return 0
-        
+
         unit = self.unit_var.get()
         try:
             if unit == "sats":
@@ -1257,44 +1511,46 @@ class SendDialog:
                     fiat = float(amount_str)
                     btc = fiat / price
                     return int(btc * 100_000_000)
-        except:
+        except Exception:
             pass
         return 0
-    
+
     def update_calculation(self):
         """Update the transaction breakdown display"""
+        # Guard in case this fires before calc_text exists
+        if not hasattr(self, "calc_text"):
+            return
+
         self.calc_text.config(state='normal')
         self.calc_text.delete('1.0', tk.END)
-        
+
         unit = self.unit_var.get()
         amount_sats = self.get_amount_sats()
-        
+
         try:
             fee_rate = int(self.fee_var.get().strip())
-        except:
+        except Exception:
             fee_rate = 10
-        
+
         balance_sats = self.gui.balance_sats
-        
-        # Estimate tx size (assumes SegWit, 1-2 inputs typical)
-        # P2WPKH: ~110 base + 68 per input
+
         est_inputs = max(1, (amount_sats // 50000) + 1) if amount_sats > 0 else 1
         est_vsize = 110 + (68 * est_inputs)
         fee_sats = est_vsize * fee_rate
-        
+
         total_needed = amount_sats + fee_sats
         change_sats = balance_sats - total_needed if balance_sats >= total_needed else 0
-        
-        # Build display
+
         lines = []
         lines.append(f"  Available balance: {self.sats_to_unit(balance_sats, unit)}")
         lines.append(f"")
         lines.append(f"  Recipient gets:    {self.sats_to_unit(amount_sats, unit)}")
         lines.append(f"  Network fee:       {self.sats_to_unit(fee_sats, unit)} (~{est_vsize} vB × {fee_rate} sat/vB)")
+        lines.append(f"  RBF enabled:       {'yes' if self.rbf_var.get() else 'no'}")
         lines.append(f"  ────────────────────────────────────")
         lines.append(f"  Total from wallet: {self.sats_to_unit(total_needed, unit)}")
         lines.append(f"  Change returned:   {self.sats_to_unit(change_sats, unit)}")
-        
+
         if balance_sats < total_needed:
             shortfall = total_needed - balance_sats
             lines.append(f"")
@@ -1306,24 +1562,23 @@ class SendDialog:
             self.send_btn.config(state='disabled')
         else:
             self.send_btn.config(state='normal')
-        
+
         self.calc_text.insert('1.0', '\n'.join(lines))
         self.calc_text.config(state='disabled')
-    
+
     def set_max_amount(self):
         """Set amount to max recipient can receive (balance minus fees)"""
         try:
             fee_rate = int(self.fee_var.get().strip())
-        except:
+        except Exception:
             fee_rate = 10
-        
-        # Estimate fee for typical tx
-        est_vsize = 150  # Conservative estimate
+
+        est_vsize = 150
         fee_sats = est_vsize * fee_rate
         max_sats = max(0, self.gui.balance_sats - fee_sats)
-        
+
         unit = self.unit_var.get()
-        
+
         if unit == "sats":
             self.amount_var.set(str(max_sats))
         elif unit == "BTC":
@@ -1336,123 +1591,130 @@ class SendDialog:
             else:
                 self.unit_var.set("sats")
                 self.amount_var.set(str(max_sats))
-        
+
         self.update_calculation()
-    
+
     def send(self):
         """Execute send"""
         dest = self.dest_var.get().strip()
         if not dest:
             messagebox.showerror("Error", "Enter destination address")
             return
-        
+
         amount_sats = self.get_amount_sats()
         if amount_sats <= 0:
             messagebox.showerror("Error", "Enter a valid amount")
             return
-        
+
         try:
             fee_rate = int(self.fee_var.get().strip())
-        except:
+        except Exception:
             messagebox.showerror("Error", "Invalid fee rate")
             return
-        
+
         unit = self.unit_var.get()
-        
-        # Build confirmation message
+
         est_vsize = 150
         fee_sats = est_vsize * fee_rate
         total = amount_sats + fee_sats
-        
+
         msg = f"CONFIRM TRANSACTION\n\n"
         msg += f"Send:  {self.sats_to_unit(amount_sats, unit)}\n"
         msg += f"Fee:   {self.sats_to_unit(fee_sats, unit)}\n"
-        msg += f"Total: {self.sats_to_unit(total, unit)}\n\n"
+        msg += f"Total: {self.sats_to_unit(total, unit)}\n"
+        msg += f"RBF:   {'enabled' if self.rbf_var.get() else 'disabled'}\n\n"
         msg += f"To: {dest[:20]}...{dest[-8:]}\n\n"
         msg += f"Proceed?"
-        
+
         if not messagebox.askyesno("Confirm Send", msg):
             return
-        
+
         self.status_label.config(text="Building transaction...")
         self.send_btn.config(state='disabled')
         threading.Thread(target=lambda: self._execute_send(dest, amount_sats, fee_rate), daemon=True).start()
-    
+
     def _execute_send(self, dest, amount_sats, fee_rate):
         """Background thread: execute send"""
         try:
             wallet = self.gui.wallet
-            
-            # Connect
+
             if not se050_connect():
                 self.top.after(0, lambda: messagebox.showerror("Error", "SE050 connection failed"))
                 return
-            
-            # Get UTXOs
+
             utxos = get_utxos(wallet.addresses['segwit'])
             if not utxos:
                 utxos = get_utxos(wallet.addresses['legacy'])
-            
+
             if not utxos:
                 self.top.after(0, lambda: messagebox.showerror("Error", "No UTXOs available"))
+                self.top.after(0, lambda: self.send_btn.config(state='normal'))
                 return
-            
+
             total_in = sum(u['value'] for u in utxos)
             est_vsize = 110 + (68 * len(utxos))
             fee = est_vsize * fee_rate
-            
+
             unit = self.unit_var.get()
-            
+
             if total_in < amount_sats + fee:
                 shortfall = (amount_sats + fee) - total_in
-                msg = f"Insufficient funds\n\nHave: {self.sats_to_unit(total_in, unit)}\nNeed: {self.sats_to_unit(amount_sats + fee, unit)}\nShort: {self.sats_to_unit(shortfall, unit)}"
+                msg = (
+                    "Insufficient funds\n\n"
+                    f"Have: {self.sats_to_unit(total_in, unit)}\n"
+                    f"Need: {self.sats_to_unit(amount_sats + fee, unit)}\n"
+                    f"Short: {self.sats_to_unit(shortfall, unit)}"
+                )
                 self.top.after(0, lambda: messagebox.showerror("Error", msg))
                 self.top.after(0, lambda: self.send_btn.config(state='normal'))
                 return
-            
+
             change = total_in - amount_sats - fee
-            
-            # Build inputs/outputs
+
             inputs = [{'txid': u['txid'], 'vout': u['vout'], 'value': u['value']} for u in utxos]
             outputs = [{'value': amount_sats, 'script': create_output_script(dest)}]
-            
+
             if change > 546:
                 change_script = bytes([0x00, 0x14]) + hash160(wallet.pubkey_compressed)
                 outputs.append({'value': change, 'script': change_script})
-            
+
             self.top.after(0, lambda: self.status_label.config(text="Signing with SE050..."))
-            
-            # Sign
-            raw_tx = build_and_sign_transaction(inputs, outputs, wallet.pubkey_compressed, wallet.pubkey_hash)
+
+            raw_tx = build_and_sign_transaction(
+                inputs,
+                outputs,
+                wallet.pubkey_compressed,
+                wallet.pubkey_hash,
+                rbf=self.rbf_var.get()
+            )
             tx_hex = raw_tx.hex()
-            
+
             self.top.after(0, lambda: self.status_label.config(text="Broadcasting..."))
-            
-            # Broadcast
+
             txid = api_post("/tx", tx_hex.encode())
-            
+
             if txid:
                 self.top.after(0, lambda: self._send_success(txid, amount_sats, fee))
             else:
                 self.top.after(0, lambda: messagebox.showerror("Error", "Broadcast failed"))
                 self.top.after(0, lambda: self.send_btn.config(state='normal'))
-                
+
         except Exception as e:
             err_msg = str(e)
             self.top.after(0, lambda: messagebox.showerror("Error", f"Send failed: {err_msg}"))
             self.top.after(0, lambda: self.send_btn.config(state='normal'))
-    
+
     def _send_success(self, txid, amount_sats, fee_sats):
         """Handle successful send"""
         unit = self.unit_var.get()
         explorer = "mempool.space/testnet4" if Config.NETWORK == "testnet" else "mempool.space"
-        
+
         msg = f"Transaction broadcast!\n\n"
         msg += f"Sent: {self.sats_to_unit(amount_sats, unit)}\n"
         msg += f"Fee: {self.sats_to_unit(fee_sats, unit)}\n\n"
         msg += f"TXID:\n{txid}\n\n"
         msg += f"https://{explorer}/tx/{txid}"
-        
+
         messagebox.showinfo("Success!", msg)
         self.top.destroy()
         self.gui.refresh_balance()
@@ -1462,29 +1724,16 @@ def main():
     # Parse args
     if '--testnet' in sys.argv:
         Config.NETWORK = "testnet"
-    
+
     if '--keyid' in sys.argv:
         idx = sys.argv.index('--keyid')
         if idx + 1 < len(sys.argv):
             Config.KEY_ID = sys.argv[idx + 1]
-    
-    # Pre-check: try to connect to SE050 before launching GUI
+
     port = Config.get_connection_port()
     print(f"Connecting to SE050 via {Config.CONNECTION_TYPE} @ {port}...")
     
-    if not se050_connect(debug=True):
-        print("ERROR: Cannot connect to SE050!")
-        print("")
-        print("Check:")
-        print("  1. K64F is connected via USB")
-        print("  2. SE050ARD is attached to K64F")
-        print("  3. Device exists: ls /dev/ttyACM*")
-        print("")
-        print(f"Try manually: ssscli connect se05x vcom {port}")
-        print("              ssscli se05x uid")
-        sys.exit(1)
-    print("SE050 connected!")
-    
+
     root = tk.Tk()
     app = WalletGUI(root)
     root.mainloop()
