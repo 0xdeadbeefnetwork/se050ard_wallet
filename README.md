@@ -48,6 +48,7 @@ The SE050 is a ~$2 secure element with:
 - Hardware true random number generator (TRNG)
 - Tamper-resistant key storage
 - On-chip ECDSA signing (secp256k1)
+- Open documentation
 
 This project turns an SE050 eval kit into a functional Bitcoin hardware wallet.
 
@@ -211,9 +212,11 @@ The GUI provides:
 - QR code for receiving
 - One-click copy addresses
 - Send dialog with fee estimation
+- **RBF toggle** (Replace-By-Fee) for bumpable transactions
+- **CPFP support** (Child-Pays-For-Parent) for stuck incoming transactions
+- **RBF replacement** for stuck outgoing transactions
 - Message signing
-- Transaction history
-- **Balance monitoring with notifications**
+- Transaction history with right-click options
 - SE050 verification
 
 Requires: `pip3 install qrcode pillow --break-system-packages` for QR display.
@@ -724,9 +727,33 @@ When sending:
 - Override with `--fee` flag: `./wallet.py send <addr> <amt> --fee 20`
 - Wallet estimates vsize based on input count
 
-Future improvements could include:
-- Smarter coin selection (minimize inputs)
-- CPFP (Child-Pays-For-Parent)
+### RBF (Replace-By-Fee)
+
+When sending a transaction, you can enable RBF to allow fee bumping later:
+
+- **GUI:** Check "Enable RBF" in the Send dialog (enabled by default)
+- **CLI:** `./wallet.py send <addr> <amt> --rbf`
+
+If your transaction gets stuck:
+1. Go to History tab
+2. Right-click the stuck **outgoing** transaction
+3. Select "🔄 Replace (RBF)"
+4. Set a higher fee rate
+5. Broadcast the replacement
+
+The replacement spends the same inputs with a higher fee, invalidating the original.
+
+### CPFP (Child-Pays-For-Parent)
+
+If someone sends you coins with a low fee and it's stuck:
+
+1. Go to History tab
+2. Right-click the stuck **incoming** transaction  
+3. Select "⚡ Bump Fee (CPFP)"
+4. Set target fee rate for the package
+5. Broadcast the child transaction
+
+CPFP creates a child transaction that spends your stuck output with a fee high enough to pay for both parent and child, incentivizing miners to confirm both.
 
 ---
 
@@ -750,8 +777,12 @@ Future improvements could include:
 | BIP-62 low-S signatures | ✅ Normalized |
 | Transaction broadcast | ✅ Via mempool.space |
 | Tkinter GUI | ✅ Working |
-| RBF | ✅ Implemented |
-
+| **RBF (Replace-By-Fee)** | ✅ **NEW** |
+| **CPFP (Child-Pays-For-Parent)** | ✅ **NEW** |
+| P2SH-P2WPKH (Wrapped SegWit) | ❌ Not implemented |
+| Multisig | ❌ Not implemented |
+| Hardware PIN/auth | ❌ Not implemented |
+| Watch-only export | 🔜 Coming soon |
 
 ---
 
@@ -760,7 +791,6 @@ Future improvements could include:
 **Required:**
 - Python 3.7+
 - ssscli (NXP Plug & Trust Middleware)
-- tkinter
 
 **Optional (for extra features):**
 - `qrcode` - Better QR code display (`pip3 install qrcode --break-system-packages`)
@@ -777,9 +807,6 @@ MIT
 
 _SiCk @ afflicted.sh
 
-## Repository
-
-https://github.com/0xdeadbeefnetwork/se050ard_wallet
 
 ## Contributing
 
