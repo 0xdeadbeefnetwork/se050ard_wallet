@@ -1,6 +1,6 @@
 # SE050ARD Bitcoin Wallet
 
-A Bitcoin hardware wallet using the NXP SE050 secure element. Private keys are generated inside tamper-resistant silicon and **never leave the chip** - all signing happens on-device.
+A Bitcoin hardware wallet using the NXP SE050 secure element. Private keys are stored in tamper-resistant silicon and **never leave the chip** - all signing happens on-device.
 
 **Official NXP Setup Guide:** [AN13027 - EdgeLock SE05x Quick start guide](https://www.nxp.com/docs/en/application-note/AN13027.pdf)
 
@@ -12,31 +12,55 @@ https://mempool.space/testnet4/tx/fb2eca44409e391b60c5ca61456d0bb50ee9f30ad5ffe3
 
 ---
 
-## ⚠️ IMPORTANT: No Seed Phrase - By Design
+## 🆕 What's New
 
-**This wallet does NOT generate a BIP-39 seed phrase (12/24 words).**
+### BIP39 Seed Phrase Support
+- **Create wallets with 12 or 24 word seed phrases** - finally, a proper backup!
+- **Import existing seed phrases** - restore from any BIP39 compatible wallet
+- **BIP84 derivation** - standard `m/84'/0'/0'/0/0` path, works with Electrum, Sparrow, etc.
+- **Hardware TRNG entropy** - seed phrases generated using SE050's AIS31 PTG.2 certified RNG
 
-Unlike software wallets and most hardware wallets (Ledger, Trezor), the SE050 generates keys **inside the chip** using a hardware true random number generator (TRNG). The private key:
+### Lazy Mode 🦥
+- Skip seed verification (for testing/degen purposes)
+- **Copy all words to clipboard** button
+- Auto-clears clipboard after 60 seconds
+- Big red "Create Wallet (YOLO)" button
 
-- Is generated on-chip and stored in tamper-resistant silicon
-- **Cannot be exported** - there is no command to extract it
-- **Cannot be backed up** to paper or another device
-- **Cannot be recovered** if the SE050 is lost/destroyed
+### Improved UI Performance
+- **Non-blocking SE050 operations** - UI stays responsive during hardware calls
+- **Async fee fetching** - Send dialog opens instantly, fees load in background
+- **Async price fetching** - Fiat conversions don't freeze the UI
+- **Threaded key checks** - No more UI hangs when checking key slots
 
-### Why No Seed Phrase?
+---
 
-| Traditional Wallet | SE050 Wallet |
-|-------------------|--------------|
-| Seed phrase can be written down | No seed phrase exists |
-| Seed phrase can be stolen/phished | Nothing to steal |
-| Seed phrase can be recovered | Hardware is the only backup |
-| Software generates keys | Hardware generates keys |
+## ⚠️ IMPORTANT: Backup Options
 
-**This is a security tradeoff:**
-- ✅ **Pro:** No seed words to leak, phish, or extract via malware
-- ❌ **Con:** Lose the SE050 chip = lose funds forever
+This wallet now supports **two modes**:
 
-**Recommendation:** Use this for learning, small amounts, or as part of a multisig setup. For significant funds, use established hardware wallets with seed backup capability.
+### Option 1: BIP39 Seed Phrase (NEW - Recommended)
+```
+./wallet_gui.py → Keys tab → Create New Wallet
+```
+- Generates 12 or 24 word seed phrase using SE050 hardware TRNG
+- **Write it down!** This is your backup
+- Can restore to ANY BIP39 wallet (Electrum, Sparrow, BlueWallet, etc.)
+- Key is derived from seed and written to SE050
+
+### Option 2: SE050-Only (Legacy)
+```
+./wallet.py init
+```
+- Key generated and stored only on SE050
+- **No seed phrase, no backup**
+- Lose the chip = lose the funds
+
+| Mode | Backup | Recovery | Security |
+|------|--------|----------|----------|
+| BIP39 Seed | ✅ Paper backup | ✅ Any BIP39 wallet | Seed can be stolen |
+| SE050-Only | ❌ None | ❌ Impossible | Nothing to steal |
+
+**Recommendation:** Use BIP39 seed phrases. The SE050 still protects your key during operation, but now you have a backup.
 
 ---
 
@@ -193,21 +217,27 @@ ssscli connect se05x vcom /dev/ttyACM0
 ```bash
 git clone https://github.com/0xdeadbeefnetwork/se050ard_wallet.git
 cd se050ard_wallet
-chmod +x wallet.py
+chmod +x wallet.py wallet_gui.py
+
+# Optional: QR code support
+pip3 install qrcode pillow --break-system-packages
 ```
 
 ---
 
 ## Usage
 
-### GUI Mode (over VNC)
+### GUI Mode (Recommended)
 
 ```bash
-./wallet_gui.py
-./wallet_gui.py --testnet
+./wallet_gui.py           # Mainnet
+./wallet_gui.py --testnet # Testnet
 ```
 
 The GUI provides:
+- **Wallet creation with BIP39 seed phrases** (12 or 24 words)
+- **Lazy mode** - skip verification, copy seed to clipboard 🦥
+- **Import existing seed phrases**
 - Balance display with USD conversion
 - QR code for receiving
 - One-click copy addresses
@@ -219,44 +249,40 @@ The GUI provides:
 - Transaction history with right-click options
 - SE050 verification
 
-Requires: `pip3 install qrcode pillow --break-system-packages` for QR display.
-
-![GUI Screenshot](screenshot.png)
-
 ### CLI Mode
 
-#### Initialize Wallet
+#### Create Wallet with Seed Phrase
+
+```bash
+./wallet.py create              # 12 word seed (default)
+./wallet.py create --words 24   # 24 word seed
+```
+
+This:
+1. Generates entropy using SE050 hardware TRNG
+2. Creates BIP39 mnemonic (12 or 24 words)
+3. **Displays seed phrase - WRITE IT DOWN!**
+4. Derives BIP84 key and writes to SE050
+
+#### Import Existing Seed
+
+```bash
+./wallet.py import-seed
+# Enter your 12 or 24 word seed phrase when prompted
+```
+
+Or provide directly:
+```bash
+./wallet.py import-seed "word1 word2 word3 ... word12"
+```
+
+#### Legacy Init (No Seed)
 
 ```bash
 ./wallet.py init
 ```
 
-This:
-1. Connects to SE050
-2. Generates secp256k1 keypair on-chip using hardware TRNG
-3. Exports public key (private key stays in SE050)
-4. Derives Bitcoin addresses
-
-Output:
-```
-============================================================
-WALLET CREATED SUCCESSFULLY
-============================================================
-
-Key ID:     0x20000001
-Network:    mainnet
-Pubkey:     037e720714fa3b8e4b5ab32272724d48048322f114f6fef27776d53c93aeabae18
-
-RECEIVE ADDRESSES:
-  Legacy:  1L36yesgc38k8nbkTvp3wk2i6qEG3bPGWm
-  SegWit:  bc1q6rgrvq509s3l9vpklgzk08nctqymg4977phlde
-
-IMPORTANT:
-  - Private key is stored ONLY in SE050 secure element
-  - Back up your Key ID (0x20000001) and SE050 device
-  - Loss of SE050 = Loss of funds!
-============================================================
-```
+Generates key directly on SE050 with no seed backup. **Not recommended** - use `create` instead.
 
 ### Show Addresses
 
@@ -265,11 +291,6 @@ IMPORTANT:
 
 # With QR code for easy mobile scanning
 ./wallet.py address --qr
-```
-
-The QR code displays in ASCII art in your terminal. Install `qrcode` for best results:
-```bash
-pip3 install qrcode --break-system-packages
 ```
 
 ### Check Balance
@@ -296,8 +317,6 @@ Output:
   Current fees: 15 sat/vB (fast), 5 sat/vB (slow)
   BTC Price: 97,000 USD
 ```
-
-Uses mempool.space API for balance and fees, coingecko for fiat prices.
 
 ### Send Bitcoin
 
@@ -328,7 +347,8 @@ The signing happens entirely on the SE050 - the sighash goes in, a DER signature
 ### Testnet Mode
 
 ```bash
-./wallet.py --testnet init
+./wallet_gui.py --testnet
+./wallet.py --testnet create
 ./wallet.py --testnet balance
 ./wallet.py --testnet send tb1q... 10000
 ```
@@ -338,204 +358,28 @@ The signing happens entirely on the SE050 - the sighash goes in, a DER signature
 Use different key slots:
 
 ```bash
-./wallet.py --keyid 20000002 init
+./wallet.py --keyid 20000002 create
 ./wallet.py --keyid 20000002 address
+./wallet_gui.py --keyid 20000002
 ```
-
-### Sign a Message
-
-Prove you own an address by signing a message:
-
-```bash
-./wallet.py sign-message "I own this address - 2025-01-10"
-```
-
-Output:
-```
-============================================================
-BITCOIN SIGNED MESSAGE
-============================================================
-
-Message:  I own this address - 2025-01-10
-Address:  bc1q6rgrvq509s3l9vpklgzk08nctqymg4977phlde
-
-Connecting to SE050...
-[OK] Connected
-
-Signing with SE050...
-[OK] Message signed
-
-============================================================
-SIGNATURE:
-============================================================
-
-H7x1y2z3...base64...==
-
-============================================================
-
-To verify, use: https://www.verifybitcoinmessage.com/
-```
-
-### Transaction History
-
-View recent transactions:
-
-```bash
-./wallet.py history
-./wallet.py history -n 20  # Show last 20 transactions
-```
-
-Output:
-```
-  ✓ 2025-01-09 21:15  ← RECV  +50,000 sats
-    fb2eca44409e391b...deec
-
-  ✓ 2025-01-08 14:30  → SEND  -10,000 sats
-    a1b2c3d4e5f6g7h8...ijkl
-```
-
-### Verify SE050
-
-Confirm the SE050 hardware is really being used:
-
-```bash
-./wallet.py verify
-```
-
-This checks:
-1. SE050 is connected and responding
-2. Public key matches what's stored on SE050
-3. Signatures are generated on-chip
-4. Private key cannot be extracted
-
-### Watch for Incoming Coins
-
-Monitor your wallet for incoming transactions:
-
-```bash
-# Watch with 30 second interval (default)
-./wallet.py watch
-
-# Watch with custom interval
-./wallet.py watch -i 60
-```
-
-Output:
-```
-============================================================
-WATCHING FOR TRANSACTIONS
-============================================================
-
-SegWit: bc1q6rgrvq509s3l9vpklgzk08nctqymg4977phlde
-Legacy: 1L36yesgc38k8nbkTvp3wk2i6qEG3bPGWm
-
-Checking every 30 seconds. Press Ctrl+C to stop.
-
-[21:15:30] Current balance: 50,000 sats
-[21:16:00] No change. Balance: 50,000 sats
-[21:16:30] 💰 RECEIVED +10,000 sats! New balance: 60,000 sats
-```
-
-Sends desktop notification (via `notify-send`) when coins arrive.
-
-### Export Public Key
-
-```bash
-./wallet.py export
-```
-
-Exports public key in hex and PEM format. **Never exports private key** (because it can't).
-
-### Wipe Wallet
-
-```bash
-./wallet.py wipe
-```
-
-Deletes key from SE050 and local files. **IRREVERSIBLE** - funds will be lost!
 
 ---
 
-## Verifying the SE050 is Really Signing
+## Derivation Path
 
-Don't trust - verify! Here's how to confirm the SE050 hardware is actually being used:
-
-### 1. Verify Public Key Matches SE050
-
-```bash
-# Export fresh copy from SE050
-ssscli connect se05x vcom /dev/ttyACM0
-ssscli get ecc pub 20000001 /tmp/verify_pubkey.der --format DER
-
-# Compare with wallet's stored copy
-diff /tmp/verify_pubkey.der ~/.se050-wallet/pubkey_20000001.der
-echo $?
-# Output: 0 (files are identical)
-
-# If different, something is wrong!
+```
+m/84'/0'/0'/0/0   - Mainnet (BIP84 Native SegWit)
+m/84'/1'/0'/0/0   - Testnet
 ```
 
-### 2. Examine the Public Key
+Compatible with any BIP84 wallet:
+- Electrum (click "Options" → check "BIP39 seed")
+- Sparrow Wallet
+- BlueWallet
+- Specter Desktop
+- Any BIP39/BIP84 compatible wallet
 
-```bash
-# View raw DER bytes
-xxd ~/.se050-wallet/pubkey_20000001.der
-
-# Extract and display with OpenSSL
-openssl ec -pubin -inform DER -in ~/.se050-wallet/pubkey_20000001.der -text -noout
-
-# You should see:
-#   ASN1 OID: secp256k1
-#   pub: 04:xx:xx:xx... (65 bytes uncompressed)
-```
-
-### 3. Test Signature Generation
-
-```bash
-# Create test message
-echo -n "test message for SE050" > /tmp/test_msg.bin
-
-# Sign with SE050
-ssscli sign 20000001 /tmp/test_msg.bin /tmp/test_sig.der --hashalgo SHA256
-
-# View signature (should be valid DER: 30 xx 02 xx ... 02 xx ...)
-xxd /tmp/test_sig.der
-
-# Verify structure: 0x30 = SEQUENCE, 0x02 = INTEGER (for r and s values)
-```
-
-### 4. Verify Signature with OpenSSL
-
-```bash
-# Hash the message (SHA256)
-openssl dgst -sha256 -binary /tmp/test_msg.bin > /tmp/test_hash.bin
-
-# Verify signature against public key
-openssl pkeyutl -verify \
-    -pubin -inkey ~/.se050-wallet/pubkey_20000001.pem \
-    -in /tmp/test_hash.bin \
-    -sigfile /tmp/test_sig.der
-
-# Output should be: "Signature Verified Successfully"
-```
-
-### 5. Confirm Key Cannot Be Extracted
-
-```bash
-# Try to get "keypair" - but SE050 only returns public key!
-ssscli get ecc pair 20000001 /tmp/keypair.der --format DER
-
-# Check what we got:
-ls -la /tmp/keypair.der
-# Output: 88 bytes (that's a public key, NOT a keypair)
-
-xxd /tmp/keypair.der | head -3
-# Shows: 3056 3010... (SubjectPublicKeyInfo structure = public key only)
-
-# The SE050 has NO command to export private keys.
-# The "pair" command is misleading - it just returns the public key.
-# This is hardware-enforced security: the private key literally cannot leave the chip.
-```
+**⚠️ Electrum Note:** When restoring in Electrum, you MUST click "Options" and check "BIP39 seed" - Electrum uses its own seed format by default.
 
 ---
 
@@ -546,8 +390,9 @@ xxd /tmp/keypair.der | head -3
 | Asset | Location | Protection |
 |-------|----------|------------|
 | Private Key | SE050 chip | Hardware tamper resistance, never exported |
-| Key Generation | SE050 TRNG | Hardware random, not PRNG |
+| Key Generation | SE050 TRNG | Hardware random (AIS31 PTG.2 certified) |
 | Signing | SE050 | Computed on-chip, key never leaves |
+| Seed Phrase | Your paper backup | You're responsible for this! |
 | Public Key | Pi filesystem | Not secret |
 | Addresses | Pi filesystem | Not secret |
 
@@ -557,18 +402,40 @@ xxd /tmp/keypair.der | head -3
 |--------|------------|
 | Pi compromised | Attacker can see addresses/balances but cannot extract key or sign without SE050 |
 | USB sniffing | Only sighash (not key) crosses the bus |
-| Physical theft of Pi | No key material on Pi |
-| Physical theft of SE050 | Tamper mesh, limited PIN attempts (if configured) |
-| Malware requests signatures | Attacker can sign arbitrary messages if they control Pi |
+| Physical theft of Pi | No key material on Pi (seed phrase not stored) |
+| Physical theft of SE050 | Restore from seed phrase to new device |
+| Seed phrase stolen | Game over - use metal backup, secure storage |
+| Malware requests signatures | Attacker can sign if they control Pi (use dedicated device) |
 
 ### What This Doesn't Protect
 
-- **Evil maid attack:** If attacker controls Pi, they can request signatures for arbitrary transactions
+- **Evil maid attack:** If attacker controls Pi, they can request signatures
 - **No display:** No way to verify transaction details on the hardware itself
-- **No PIN protection:** This implementation doesn't use SE050's authentication features (yet)
-- **No seed backup:** Lose the chip = lose funds
+- **No PIN protection:** SE050 supports this but it's broken on eval boards (see Known Issues)
+- **Seed phrase security:** That's on you - store it safely!
 
-For high-value storage, use a proper air-gapped setup or commercial hardware wallet with display.
+---
+
+## Known Issues
+
+### PIN/UserID Authentication Doesn't Work
+
+The SE050 eval board has a pre-provisioned UserID auth object (`0x7DA00001`) with a restrictive policy that blocks authentication. **Do not attempt to use `--auth_type UserID`** - it will create keys you cannot delete.
+
+```bash
+# DON'T DO THIS - creates stuck keys
+ssscli connect se05x vcom /dev/ttyACM0 --auth_type UserID
+ssscli generate ecc 0x20000099 NIST_P256 --policy_name some_policy
+# Key is now stuck forever, can't delete it
+```
+
+Stuck key slots observed: `0x20000003`, `0x20000004`, `0x20000099`
+
+This is a limitation of the eval board, not the SE050 chip itself.
+
+### I2C Bus is Unencrypted
+
+Communication between K64F and SE050 is plain I2C. The SE050 supports SCP03 encrypted sessions but ssscli's implementation doesn't work with the eval board's auth setup. Not a major concern for most threat models.
 
 ---
 
@@ -607,52 +474,69 @@ ssscli connect se05x vcom /dev/ttyACM0
 
 Key slot might be occupied:
 ```bash
-ssscli erase 20000001
+ssscli se05x readidlist  # Check what's there
+ssscli erase 20000001    # Only if you want to delete it!
 ```
 
-Then try init again.
+### Electrum Shows Wrong Addresses
 
-### Wrong Addresses After Re-init
+When restoring in Electrum:
+1. Choose "Standard wallet"
+2. Choose "I already have a seed"
+3. Enter your seed words
+4. **Click "Options"**
+5. **Check "BIP39 seed"** ← This is critical!
+6. Choose "native segwit (p2wpkh)"
 
-Each `init` generates a **NEW** keypair. Old addresses are gone forever. The SE050 doesn't store key history.
-
-### Signature Verification Failed
-
-1. Check you're using the correct key ID
-2. Verify public key matches: `ssscli get ecc pub <keyid> /tmp/check.der`
-3. Ensure BIP-62 low-S normalization is working (wallet.py handles this)
+If you skip steps 4-5, Electrum uses its own seed format and derives different addresses.
 
 ---
 
 ## How It Works
 
-### Key Generation
-
-```bash
-ssscli generate ecc 20000001 Secp256k1
-```
-
-SE050 uses its hardware TRNG to generate a random 256-bit private key, then computes the public key. Both are stored in non-volatile memory at key slot 0x20000001. The private key **cannot be read out**.
-
-### Address Derivation (on Pi)
+### BIP39 Seed Generation
 
 ```
-Compressed Public Key (33 bytes)
+SE050 TRNG (AIS31 PTG.2)
          |
          v
-      SHA256
+   128 or 256 bits entropy
          |
          v
-     RIPEMD160
+   SHA256 checksum (4 or 8 bits)
          |
          v
-   20-byte pubkey hash
+   Split into 11-bit chunks
          |
-    +----+----+
-    |         |
-    v         v
-Base58Check  Bech32
-(Legacy)    (SegWit)
+         v
+   Map to BIP39 wordlist
+         |
+         v
+   12 or 24 word mnemonic
+```
+
+### Key Derivation
+
+```
+Mnemonic + "" (empty passphrase)
+         |
+         v
+   PBKDF2-HMAC-SHA512 (2048 rounds)
+         |
+         v
+   512-bit seed
+         |
+         v
+   BIP32 master key
+         |
+         v
+   m/84'/0'/0'/0/0  (BIP84 path)
+         |
+         v
+   secp256k1 private key
+         |
+         v
+   Written to SE050
 ```
 
 ### Transaction Signing Flow
@@ -661,8 +545,8 @@ Base58Check  Bech32
    Pi                          SE050
     |                            |
     | 1. Build unsigned TX       |
-    | 2. Compute BIP-143 preimage|
-    | 3. SHA256(preimage)        |
+    | 2. Compute BIP-143 sighash |
+    | 3. SHA256(sighash)         |
     |                            |
     |  single-SHA256 hash        |
     |--------------------------->|
@@ -678,89 +562,17 @@ Base58Check  Bech32
     | 8. Broadcast to network    |
 ```
 
-### Why Single-SHA256 to SE050?
-
-The `ssscli sign` command always hashes its input before signing (no raw mode). Bitcoin needs double-SHA256 of the sighash preimage. So we:
-
-1. Compute `SHA256(preimage)` on the Pi
-2. Send that to SE050 with `--hashalgo SHA256`
-3. SE050 computes `SHA256(our_input)` = `SHA256(SHA256(preimage))` = correct sighash
-4. SE050 signs the sighash
-
-### Low-S Signature Normalization
-
-Bitcoin requires BIP-62 compliant signatures where `S <= curve_order/2`. The SE050 produces valid ECDSA signatures but doesn't enforce low-S. We normalize after receiving:
-
-```python
-SECP256K1_ORDER = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
-SECP256K1_HALF_ORDER = SECP256K1_ORDER // 2
-
-if s > SECP256K1_HALF_ORDER:
-    s = SECP256K1_ORDER - s
-```
-
----
-
-## File Locations
-
-```
-~/.se050-wallet/
-    pubkey_20000001.der    # DER-encoded public key from SE050
-    pubkey_20000001.pem    # PEM-encoded public key  
-    wallet_20000001.json   # Metadata (addresses, created timestamp)
-    tx_*.hex               # Failed transaction hex (for debugging)
-```
-
----
-
-## Fee Estimation
-
-The wallet fetches fee estimates from mempool.space API:
-
-```bash
-./wallet.py balance
-# Shows: Current fees: 15 sat/vB (fast), 5 sat/vB (slow)
-```
-
-When sending:
-- Default fee: 10 sat/vB
-- Override with `--fee` flag: `./wallet.py send <addr> <amt> --fee 20`
-- Wallet estimates vsize based on input count
-
-### RBF (Replace-By-Fee)
-
-When sending a transaction, you can enable RBF to allow fee bumping later:
-
-- **GUI:** Check "Enable RBF" in the Send dialog (enabled by default)
-- **CLI:** `./wallet.py send <addr> <amt> --rbf`
-
-If your transaction gets stuck:
-1. Go to History tab
-2. Right-click the stuck **outgoing** transaction
-3. Select "🔄 Replace (RBF)"
-4. Set a higher fee rate
-5. Broadcast the replacement
-
-The replacement spends the same inputs with a higher fee, invalidating the original.
-
-### CPFP (Child-Pays-For-Parent)
-
-If someone sends you coins with a low fee and it's stuck:
-
-1. Go to History tab
-2. Right-click the stuck **incoming** transaction  
-3. Select "⚡ Bump Fee (CPFP)"
-4. Set target fee rate for the package
-5. Broadcast the child transaction
-
-CPFP creates a child transaction that spends your stuck output with a fee high enough to pay for both parent and child, incentivizing miners to confirm both.
-
 ---
 
 ## Supported Features
 
 | Feature | Status |
 |---------|--------|
+| **BIP39 seed phrases (12/24 words)** | ✅ **NEW** |
+| **Import existing seeds** | ✅ **NEW** |
+| **Lazy mode (skip verification)** | ✅ **NEW** |
+| **Copy seed to clipboard** | ✅ **NEW** |
+| **Non-blocking UI** | ✅ **NEW** |
 | Key generation (secp256k1) | ✅ Working |
 | P2WPKH (Native SegWit) | ✅ Working |
 | P2PKH (Legacy) | ✅ Working |
@@ -777,12 +589,22 @@ CPFP creates a child transaction that spends your stuck output with a fee high e
 | BIP-62 low-S signatures | ✅ Normalized |
 | Transaction broadcast | ✅ Via mempool.space |
 | Tkinter GUI | ✅ Working |
-| **RBF (Replace-By-Fee)** | ✅ **NEW** |
-| **CPFP (Child-Pays-For-Parent)** | ✅ **NEW** |
+| RBF (Replace-By-Fee) | ✅ Working |
+| CPFP (Child-Pays-For-Parent) | ✅ Working |
 | P2SH-P2WPKH (Wrapped SegWit) | ❌ Not implemented |
 | Multisig | ❌ Not implemented |
-| Hardware PIN/auth | ❌ Not implemented |
-| Watch-only export | 🔜 Coming soon |
+| Hardware PIN/auth | ❌ Broken on eval board |
+
+---
+
+## File Locations
+
+```
+~/.se050-wallet/
+    pubkey_20000001.der    # DER-encoded public key from SE050
+    pubkey_20000001.pem    # PEM-encoded public key  
+    wallet_20000001.json   # Metadata (addresses, created timestamp)
+```
 
 ---
 
@@ -792,10 +614,13 @@ CPFP creates a child transaction that spends your stuck output with a fee high e
 - Python 3.7+
 - ssscli (NXP Plug & Trust Middleware)
 
-**Optional (for extra features):**
-- `qrcode` - Better QR code display (`pip3 install qrcode --break-system-packages`)
+**Optional:**
+- `qrcode` - QR code display
+- `pillow` - Image support for GUI QR codes
 
-No other Python packages required - uses stdlib only for core functionality.
+```bash
+pip3 install qrcode pillow --break-system-packages
+```
 
 ---
 
@@ -807,11 +632,14 @@ MIT
 
 _SiCk @ afflicted.sh
 
-
 ## Contributing
 
 Issues and PRs welcome. This is experimental software - use at your own risk.
 
 ## Disclaimer
 
-This is experimental software for educational purposes. There is **NO seed phrase backup** - if you lose the SE050, you lose your funds. Do not use with funds you cannot afford to lose. The author is not responsible for any loss of funds.
+This is experimental software. While it now supports seed phrase backups, you are responsible for securing your seed phrase. The author is not responsible for any loss of funds.
+
+---
+
+*"Not your keys, not your coins. Your keys in a secure element, backed up on paper, definitely your coins."*
