@@ -3,12 +3,11 @@
 SE050ARD Hardware Bitcoin Wallet
 =================================
 
-A Bitcoin wallet using NXP SE050 secure element for key storage.
-Private keys are generated and stored in tamper-resistant silicon.
+A Bitcoin wallet using NXP SE050 secure element for signing.
+Keys are derived from a BIP39 seed phrase and stored on SE050.
 
-IMPORTANT: This wallet does NOT generate a seed phrase!
-           The private key exists ONLY inside the SE050 chip.
-           Loss of the SE050 = Loss of funds forever!
+BACKUP: Write down your 12/24 word seed phrase!
+        If you lose the SE050, you can restore to a new chip.
 
 Requirements:
     - Raspberry Pi (tested on Pi 400)
@@ -23,7 +22,8 @@ Setup:
     4. Run: ssscli connect se05x vcom /dev/ttyACM0
 
 Usage:
-    ./wallet.py init                    # Create new wallet (generates key on SE050)
+    ./wallet.py create                  # Create wallet from NEW seed phrase
+    ./wallet.py import-seed             # Import wallet from EXISTING seed phrase
     ./wallet.py address                 # Show receive addresses
     ./wallet.py balance                 # Check balance via mempool.space
     ./wallet.py send <address> <sats>   # Send Bitcoin (signs on SE050)
@@ -39,12 +39,14 @@ Author: _SiCk @ afflicted.sh
 import sys
 import os
 import hashlib
+import hmac
 import subprocess
 import json
 import urllib.request
 import urllib.error
 import argparse
 import shutil
+import secrets
 from pathlib import Path
 from datetime import datetime
 from typing import Tuple, Optional, List, Dict
@@ -279,6 +281,483 @@ def convertbits(data: List[int], frombits: int, tobits: int, pad: bool = True) -
         if bits:
             ret.append((acc << (tobits - bits)) & maxv)
     return ret
+
+# ============================================================================
+#                           BIP39 MNEMONIC
+# ============================================================================
+
+BIP39_WORDLIST = [
+    "abandon", "ability", "able", "about", "above", "absent", "absorb", "abstract",
+    "absurd", "abuse", "access", "accident", "account", "accuse", "achieve", "acid",
+    "acoustic", "acquire", "across", "act", "action", "actor", "actress", "actual",
+    "adapt", "add", "addict", "address", "adjust", "admit", "adult", "advance",
+    "advice", "aerobic", "affair", "afford", "afraid", "again", "age", "agent",
+    "agree", "ahead", "aim", "air", "airport", "aisle", "alarm", "album",
+    "alcohol", "alert", "alien", "all", "alley", "allow", "almost", "alone",
+    "alpha", "already", "also", "alter", "always", "amateur", "amazing", "among",
+    "amount", "amused", "analyst", "anchor", "ancient", "anger", "angle", "angry",
+    "animal", "ankle", "announce", "annual", "another", "answer", "antenna", "antique",
+    "anxiety", "any", "apart", "apology", "appear", "apple", "approve", "april",
+    "arch", "arctic", "area", "arena", "argue", "arm", "armed", "armor",
+    "army", "around", "arrange", "arrest", "arrive", "arrow", "art", "artefact",
+    "artist", "artwork", "ask", "aspect", "assault", "asset", "assist", "assume",
+    "asthma", "athlete", "atom", "attack", "attend", "attitude", "attract", "auction",
+    "audit", "august", "aunt", "author", "auto", "autumn", "average", "avocado",
+    "avoid", "awake", "aware", "away", "awesome", "awful", "awkward", "axis",
+    "baby", "bachelor", "bacon", "badge", "bag", "balance", "balcony", "ball",
+    "bamboo", "banana", "banner", "bar", "barely", "bargain", "barrel", "base",
+    "basic", "basket", "battle", "beach", "bean", "beauty", "because", "become",
+    "beef", "before", "begin", "behave", "behind", "believe", "below", "belt",
+    "bench", "benefit", "best", "betray", "better", "between", "beyond", "bicycle",
+    "bid", "bike", "bind", "biology", "bird", "birth", "bitter", "black",
+    "blade", "blame", "blanket", "blast", "bleak", "bless", "blind", "blood",
+    "blossom", "blouse", "blue", "blur", "blush", "board", "boat", "body",
+    "boil", "bomb", "bone", "bonus", "book", "boost", "border", "boring",
+    "borrow", "boss", "bottom", "bounce", "box", "boy", "bracket", "brain",
+    "brand", "brass", "brave", "bread", "breeze", "brick", "bridge", "brief",
+    "bright", "bring", "brisk", "broccoli", "broken", "bronze", "broom", "brother",
+    "brown", "brush", "bubble", "buddy", "budget", "buffalo", "build", "bulb",
+    "bulk", "bullet", "bundle", "bunker", "burden", "burger", "burst", "bus",
+    "business", "busy", "butter", "buyer", "buzz", "cabbage", "cabin", "cable",
+    "cactus", "cage", "cake", "call", "calm", "camera", "camp", "can",
+    "canal", "cancel", "candy", "cannon", "canoe", "canvas", "canyon", "capable",
+    "capital", "captain", "car", "carbon", "card", "cargo", "carpet", "carry",
+    "cart", "case", "cash", "casino", "castle", "casual", "cat", "catalog",
+    "catch", "category", "cattle", "caught", "cause", "caution", "cave", "ceiling",
+    "celery", "cement", "census", "century", "cereal", "certain", "chair", "chalk",
+    "champion", "change", "chaos", "chapter", "charge", "chase", "chat", "cheap",
+    "check", "cheese", "chef", "cherry", "chest", "chicken", "chief", "child",
+    "chimney", "choice", "choose", "chronic", "chuckle", "chunk", "churn", "cigar",
+    "cinnamon", "circle", "citizen", "city", "civil", "claim", "clap", "clarify",
+    "claw", "clay", "clean", "clerk", "clever", "click", "client", "cliff",
+    "climb", "clinic", "clip", "clock", "clog", "close", "cloth", "cloud",
+    "clown", "club", "clump", "cluster", "clutch", "coach", "coast", "coconut",
+    "code", "coffee", "coil", "coin", "collect", "color", "column", "combine",
+    "come", "comfort", "comic", "common", "company", "concert", "conduct", "confirm",
+    "congress", "connect", "consider", "control", "convince", "cook", "cool", "copper",
+    "copy", "coral", "core", "corn", "correct", "cost", "cotton", "couch",
+    "country", "couple", "course", "cousin", "cover", "coyote", "crack", "cradle",
+    "craft", "cram", "crane", "crash", "crater", "crawl", "crazy", "cream",
+    "credit", "creek", "crew", "cricket", "crime", "crisp", "critic", "crop",
+    "cross", "crouch", "crowd", "crucial", "cruel", "cruise", "crumble", "crunch",
+    "crush", "cry", "crystal", "cube", "culture", "cup", "cupboard", "curious",
+    "current", "curtain", "curve", "cushion", "custom", "cute", "cycle", "dad",
+    "damage", "damp", "dance", "danger", "daring", "dash", "daughter", "dawn",
+    "day", "deal", "debate", "debris", "decade", "december", "decide", "decline",
+    "decorate", "decrease", "deer", "defense", "define", "defy", "degree", "delay",
+    "deliver", "demand", "demise", "denial", "dentist", "deny", "depart", "depend",
+    "deposit", "depth", "deputy", "derive", "describe", "desert", "design", "desk",
+    "despair", "destroy", "detail", "detect", "develop", "device", "devote", "diagram",
+    "dial", "diamond", "diary", "dice", "diesel", "diet", "differ", "digital",
+    "dignity", "dilemma", "dinner", "dinosaur", "direct", "dirt", "disagree", "discover",
+    "disease", "dish", "dismiss", "disorder", "display", "distance", "divert", "divide",
+    "divorce", "dizzy", "doctor", "document", "dog", "doll", "dolphin", "domain",
+    "donate", "donkey", "donor", "door", "dose", "double", "dove", "draft",
+    "dragon", "drama", "drastic", "draw", "dream", "dress", "drift", "drill",
+    "drink", "drip", "drive", "drop", "drum", "dry", "duck", "dumb",
+    "dune", "during", "dust", "dutch", "duty", "dwarf", "dynamic", "eager",
+    "eagle", "early", "earn", "earth", "easily", "east", "easy", "echo",
+    "ecology", "economy", "edge", "edit", "educate", "effort", "egg", "eight",
+    "either", "elbow", "elder", "electric", "elegant", "element", "elephant", "elevator",
+    "elite", "else", "embark", "embody", "embrace", "emerge", "emotion", "employ",
+    "empower", "empty", "enable", "enact", "end", "endless", "endorse", "enemy",
+    "energy", "enforce", "engage", "engine", "enhance", "enjoy", "enlist", "enough",
+    "enrich", "enroll", "ensure", "enter", "entire", "entry", "envelope", "episode",
+    "equal", "equip", "era", "erase", "erode", "erosion", "error", "erupt",
+    "escape", "essay", "essence", "estate", "eternal", "ethics", "evidence", "evil",
+    "evoke", "evolve", "exact", "example", "excess", "exchange", "excite", "exclude",
+    "excuse", "execute", "exercise", "exhaust", "exhibit", "exile", "exist", "exit",
+    "exotic", "expand", "expect", "expire", "explain", "expose", "express", "extend",
+    "extra", "eye", "eyebrow", "fabric", "face", "faculty", "fade", "faint",
+    "faith", "fall", "false", "fame", "family", "famous", "fan", "fancy",
+    "fantasy", "farm", "fashion", "fat", "fatal", "father", "fatigue", "fault",
+    "favorite", "feature", "february", "federal", "fee", "feed", "feel", "female",
+    "fence", "festival", "fetch", "fever", "few", "fiber", "fiction", "field",
+    "figure", "file", "film", "filter", "final", "find", "fine", "finger",
+    "finish", "fire", "firm", "first", "fiscal", "fish", "fit", "fitness",
+    "fix", "flag", "flame", "flash", "flat", "flavor", "flee", "flight",
+    "flip", "float", "flock", "floor", "flower", "fluid", "flush", "fly",
+    "foam", "focus", "fog", "foil", "fold", "follow", "food", "foot",
+    "force", "forest", "forget", "fork", "fortune", "forum", "forward", "fossil",
+    "foster", "found", "fox", "fragile", "frame", "frequent", "fresh", "friend",
+    "fringe", "frog", "front", "frost", "frown", "frozen", "fruit", "fuel",
+    "fun", "funny", "furnace", "fury", "future", "gadget", "gain", "galaxy",
+    "gallery", "game", "gap", "garage", "garbage", "garden", "garlic", "garment",
+    "gas", "gasp", "gate", "gather", "gauge", "gaze", "general", "genius",
+    "genre", "gentle", "genuine", "gesture", "ghost", "giant", "gift", "giggle",
+    "ginger", "giraffe", "girl", "give", "glad", "glance", "glare", "glass",
+    "glide", "glimpse", "globe", "gloom", "glory", "glove", "glow", "glue",
+    "goat", "goddess", "gold", "good", "goose", "gorilla", "gospel", "gossip",
+    "govern", "gown", "grab", "grace", "grain", "grant", "grape", "grass",
+    "gravity", "great", "green", "grid", "grief", "grit", "grocery", "group",
+    "grow", "grunt", "guard", "guess", "guide", "guilt", "guitar", "gun",
+    "gym", "habit", "hair", "half", "hammer", "hamster", "hand", "happy",
+    "harbor", "hard", "harsh", "harvest", "hat", "have", "hawk", "hazard",
+    "head", "health", "heart", "heavy", "hedgehog", "height", "hello", "helmet",
+    "help", "hen", "hero", "hidden", "high", "hill", "hint", "hip",
+    "hire", "history", "hobby", "hockey", "hold", "hole", "holiday", "hollow",
+    "home", "honey", "hood", "hope", "horn", "horror", "horse", "hospital",
+    "host", "hotel", "hour", "hover", "hub", "huge", "human", "humble",
+    "humor", "hundred", "hungry", "hunt", "hurdle", "hurry", "hurt", "husband",
+    "hybrid", "ice", "icon", "idea", "identify", "idle", "ignore", "ill",
+    "illegal", "illness", "image", "imitate", "immense", "immune", "impact", "impose",
+    "improve", "impulse", "inch", "include", "income", "increase", "index", "indicate",
+    "indoor", "industry", "infant", "inflict", "inform", "inhale", "inherit", "initial",
+    "inject", "injury", "inmate", "inner", "innocent", "input", "inquiry", "insane",
+    "insect", "inside", "inspire", "install", "intact", "interest", "into", "invest",
+    "invite", "involve", "iron", "island", "isolate", "issue", "item", "ivory",
+    "jacket", "jaguar", "jar", "jazz", "jealous", "jeans", "jelly", "jewel",
+    "job", "join", "joke", "journey", "joy", "judge", "juice", "jump",
+    "jungle", "junior", "junk", "just", "kangaroo", "keen", "keep", "ketchup",
+    "key", "kick", "kid", "kidney", "kind", "kingdom", "kiss", "kit",
+    "kitchen", "kite", "kitten", "kiwi", "knee", "knife", "knock", "know",
+    "lab", "label", "labor", "ladder", "lady", "lake", "lamp", "language",
+    "laptop", "large", "later", "latin", "laugh", "laundry", "lava", "law",
+    "lawn", "lawsuit", "layer", "lazy", "leader", "leaf", "learn", "leave",
+    "lecture", "left", "leg", "legal", "legend", "leisure", "lemon", "lend",
+    "length", "lens", "leopard", "lesson", "letter", "level", "liar", "liberty",
+    "library", "license", "life", "lift", "light", "like", "limb", "limit",
+    "link", "lion", "liquid", "list", "little", "live", "lizard", "load",
+    "loan", "lobster", "local", "lock", "logic", "lonely", "long", "loop",
+    "lottery", "loud", "lounge", "love", "loyal", "lucky", "luggage", "lumber",
+    "lunar", "lunch", "luxury", "lyrics", "machine", "mad", "magic", "magnet",
+    "maid", "mail", "main", "major", "make", "mammal", "man", "manage",
+    "mandate", "mango", "mansion", "manual", "maple", "marble", "march", "margin",
+    "marine", "market", "marriage", "mask", "mass", "master", "match", "material",
+    "math", "matrix", "matter", "maximum", "maze", "meadow", "mean", "measure",
+    "meat", "mechanic", "medal", "media", "melody", "melt", "member", "memory",
+    "mention", "menu", "mercy", "merge", "merit", "merry", "mesh", "message",
+    "metal", "method", "middle", "midnight", "milk", "million", "mimic", "mind",
+    "minimum", "minor", "minute", "miracle", "mirror", "misery", "miss", "mistake",
+    "mix", "mixed", "mixture", "mobile", "model", "modify", "mom", "moment",
+    "monitor", "monkey", "monster", "month", "moon", "moral", "more", "morning",
+    "mosquito", "mother", "motion", "motor", "mountain", "mouse", "move", "movie",
+    "much", "muffin", "mule", "multiply", "muscle", "museum", "mushroom", "music",
+    "must", "mutual", "myself", "mystery", "myth", "naive", "name", "napkin",
+    "narrow", "nasty", "nation", "nature", "near", "neck", "need", "negative",
+    "neglect", "neither", "nephew", "nerve", "nest", "net", "network", "neutral",
+    "never", "news", "next", "nice", "night", "noble", "noise", "nominee",
+    "noodle", "normal", "north", "nose", "notable", "note", "nothing", "notice",
+    "novel", "now", "nuclear", "number", "nurse", "nut", "oak", "obey",
+    "object", "oblige", "obscure", "observe", "obtain", "obvious", "occur", "ocean",
+    "october", "odor", "off", "offer", "office", "often", "oil", "okay",
+    "old", "olive", "olympic", "omit", "once", "one", "onion", "online",
+    "only", "open", "opera", "opinion", "oppose", "option", "orange", "orbit",
+    "orchard", "order", "ordinary", "organ", "orient", "original", "orphan", "ostrich",
+    "other", "outdoor", "outer", "output", "outside", "oval", "oven", "over",
+    "own", "owner", "oxygen", "oyster", "ozone", "pact", "paddle", "page",
+    "pair", "palace", "palm", "panda", "panel", "panic", "panther", "paper",
+    "parade", "parent", "park", "parrot", "party", "pass", "patch", "path",
+    "patient", "patrol", "pattern", "pause", "pave", "payment", "peace", "peanut",
+    "pear", "peasant", "pelican", "pen", "penalty", "pencil", "people", "pepper",
+    "perfect", "permit", "person", "pet", "phone", "photo", "phrase", "physical",
+    "piano", "picnic", "picture", "piece", "pig", "pigeon", "pill", "pilot",
+    "pink", "pioneer", "pipe", "pistol", "pitch", "pizza", "place", "planet",
+    "plastic", "plate", "play", "please", "pledge", "pluck", "plug", "plunge",
+    "poem", "poet", "point", "polar", "pole", "police", "pond", "pony",
+    "pool", "popular", "portion", "position", "possible", "post", "potato", "pottery",
+    "poverty", "powder", "power", "practice", "praise", "predict", "prefer", "prepare",
+    "present", "pretty", "prevent", "price", "pride", "primary", "print", "priority",
+    "prison", "private", "prize", "problem", "process", "produce", "profit", "program",
+    "project", "promote", "proof", "property", "prosper", "protect", "proud", "provide",
+    "public", "pudding", "pull", "pulp", "pulse", "pumpkin", "punch", "pupil",
+    "puppy", "purchase", "purity", "purpose", "purse", "push", "put", "puzzle",
+    "pyramid", "quality", "quantum", "quarter", "question", "quick", "quit", "quiz",
+    "quote", "rabbit", "raccoon", "race", "rack", "radar", "radio", "rail",
+    "rain", "raise", "rally", "ramp", "ranch", "random", "range", "rapid",
+    "rare", "rate", "rather", "raven", "raw", "razor", "ready", "real",
+    "reason", "rebel", "rebuild", "recall", "receive", "recipe", "record", "recycle",
+    "reduce", "reflect", "reform", "refuse", "region", "regret", "regular", "reject",
+    "relax", "release", "relief", "rely", "remain", "remember", "remind", "remove",
+    "render", "renew", "rent", "reopen", "repair", "repeat", "replace", "report",
+    "require", "rescue", "resemble", "resist", "resource", "response", "result", "retire",
+    "retreat", "return", "reunion", "reveal", "review", "reward", "rhythm", "rib",
+    "ribbon", "rice", "rich", "ride", "ridge", "rifle", "right", "rigid",
+    "ring", "riot", "ripple", "risk", "ritual", "rival", "river", "road",
+    "roast", "robot", "robust", "rocket", "romance", "roof", "rookie", "room",
+    "rose", "rotate", "rough", "round", "route", "royal", "rubber", "rude",
+    "rug", "rule", "run", "runway", "rural", "sad", "saddle", "sadness",
+    "safe", "sail", "salad", "salmon", "salon", "salt", "salute", "same",
+    "sample", "sand", "satisfy", "satoshi", "sauce", "sausage", "save", "say",
+    "scale", "scan", "scare", "scatter", "scene", "scheme", "school", "science",
+    "scissors", "scorpion", "scout", "scrap", "screen", "script", "scrub", "sea",
+    "search", "season", "seat", "second", "secret", "section", "security", "seed",
+    "seek", "segment", "select", "sell", "seminar", "senior", "sense", "sentence",
+    "series", "service", "session", "settle", "setup", "seven", "shadow", "shaft",
+    "shallow", "share", "shed", "shell", "sheriff", "shield", "shift", "shine",
+    "ship", "shiver", "shock", "shoe", "shoot", "shop", "short", "shoulder",
+    "shove", "shrimp", "shrug", "shuffle", "shy", "sibling", "sick", "side",
+    "siege", "sight", "sign", "silent", "silk", "silly", "silver", "similar",
+    "simple", "since", "sing", "siren", "sister", "situate", "six", "size",
+    "skate", "sketch", "ski", "skill", "skin", "skirt", "skull", "slab",
+    "slam", "sleep", "slender", "slice", "slide", "slight", "slim", "slogan",
+    "slot", "slow", "slush", "small", "smart", "smile", "smoke", "smooth",
+    "snack", "snake", "snap", "sniff", "snow", "soap", "soccer", "social",
+    "sock", "soda", "soft", "solar", "soldier", "solid", "solution", "solve",
+    "someone", "song", "soon", "sorry", "sort", "soul", "sound", "soup",
+    "source", "south", "space", "spare", "spatial", "spawn", "speak", "special",
+    "speed", "spell", "spend", "sphere", "spice", "spider", "spike", "spin",
+    "spirit", "split", "spoil", "sponsor", "spoon", "sport", "spot", "spray",
+    "spread", "spring", "spy", "square", "squeeze", "squirrel", "stable", "stadium",
+    "staff", "stage", "stairs", "stamp", "stand", "start", "state", "stay",
+    "steak", "steel", "stem", "step", "stereo", "stick", "still", "sting",
+    "stock", "stomach", "stone", "stool", "story", "stove", "strategy", "street",
+    "strike", "strong", "struggle", "student", "stuff", "stumble", "style", "subject",
+    "submit", "subway", "success", "such", "sudden", "suffer", "sugar", "suggest",
+    "suit", "summer", "sun", "sunny", "sunset", "super", "supply", "supreme",
+    "sure", "surface", "surge", "surprise", "surround", "survey", "suspect", "sustain",
+    "swallow", "swamp", "swap", "swarm", "swear", "sweet", "swift", "swim",
+    "swing", "switch", "sword", "symbol", "symptom", "syrup", "system", "table",
+    "tackle", "tag", "tail", "talent", "talk", "tank", "tape", "target",
+    "task", "taste", "tattoo", "taxi", "teach", "team", "tell", "ten",
+    "tenant", "tennis", "tent", "term", "test", "text", "thank", "that",
+    "theme", "then", "theory", "there", "they", "thing", "this", "thought",
+    "three", "thrive", "throw", "thumb", "thunder", "ticket", "tide", "tiger",
+    "tilt", "timber", "time", "tiny", "tip", "tired", "tissue", "title",
+    "toast", "tobacco", "today", "toddler", "toe", "together", "toilet", "token",
+    "tomato", "tomorrow", "tone", "tongue", "tonight", "tool", "tooth", "top",
+    "topic", "topple", "torch", "tornado", "tortoise", "toss", "total", "tourist",
+    "toward", "tower", "town", "toy", "track", "trade", "traffic", "tragic",
+    "train", "transfer", "trap", "trash", "travel", "tray", "treat", "tree",
+    "trend", "trial", "tribe", "trick", "trigger", "trim", "trip", "trophy",
+    "trouble", "truck", "true", "truly", "trumpet", "trust", "truth", "try",
+    "tube", "tuition", "tumble", "tuna", "tunnel", "turkey", "turn", "turtle",
+    "twelve", "twenty", "twice", "twin", "twist", "two", "type", "typical",
+    "ugly", "umbrella", "unable", "unaware", "uncle", "uncover", "under", "undo",
+    "unfair", "unfold", "unhappy", "uniform", "unique", "unit", "universe", "unknown",
+    "unlock", "until", "unusual", "unveil", "update", "upgrade", "uphold", "upon",
+    "upper", "upset", "urban", "urge", "usage", "use", "used", "useful",
+    "useless", "usual", "utility", "vacant", "vacuum", "vague", "valid", "valley",
+    "valve", "van", "vanish", "vapor", "various", "vast", "vault", "vehicle",
+    "velvet", "vendor", "venture", "venue", "verb", "verify", "version", "very",
+    "vessel", "veteran", "viable", "vibrant", "vicious", "victory", "video", "view",
+    "village", "vintage", "violin", "virtual", "virus", "visa", "visit", "visual",
+    "vital", "vivid", "vocal", "voice", "void", "volcano", "volume", "vote",
+    "voyage", "wage", "wagon", "wait", "walk", "wall", "walnut", "want",
+    "warfare", "warm", "warrior", "wash", "wasp", "waste", "water", "wave",
+    "way", "wealth", "weapon", "wear", "weasel", "weather", "web", "wedding",
+    "weekend", "weird", "welcome", "west", "wet", "whale", "what", "wheat",
+    "wheel", "when", "where", "whip", "whisper", "wide", "width", "wife",
+    "wild", "will", "win", "window", "wine", "wing", "wink", "winner",
+    "winter", "wire", "wisdom", "wise", "wish", "witness", "wolf", "woman",
+    "wonder", "wood", "wool", "word", "work", "world", "worry", "worth",
+    "wrap", "wreck", "wrestle", "wrist", "write", "wrong", "yard", "year",
+    "yellow", "you", "young", "youth", "zebra", "zero", "zone", "zoo"
+]
+
+def generate_mnemonic(strength: int = 128) -> str:
+    """
+    Generate a BIP39 mnemonic phrase.
+    strength: 128 bits = 12 words, 256 bits = 24 words
+    """
+    if strength not in (128, 160, 192, 224, 256):
+        raise ValueError("Strength must be 128, 160, 192, 224, or 256 bits")
+
+    entropy = secrets.token_bytes(strength // 8)
+    h = hashlib.sha256(entropy).digest()
+    b = bin(int.from_bytes(entropy, 'big'))[2:].zfill(strength)
+    b += bin(int.from_bytes(h, 'big'))[2:].zfill(256)[:strength // 32]
+
+    words = []
+    for i in range(0, len(b), 11):
+        idx = int(b[i:i+11], 2)
+        words.append(BIP39_WORDLIST[idx])
+
+    return ' '.join(words)
+
+def validate_mnemonic(mnemonic: str) -> bool:
+    """Validate a BIP39 mnemonic phrase."""
+    words = mnemonic.lower().strip().split()
+    if len(words) not in (12, 15, 18, 21, 24):
+        return False
+
+    for word in words:
+        if word not in BIP39_WORDLIST:
+            return False
+
+    # Verify checksum
+    b = ''
+    for word in words:
+        idx = BIP39_WORDLIST.index(word)
+        b += bin(idx)[2:].zfill(11)
+
+    entropy_bits = len(words) * 11 * 32 // 33
+    entropy = int(b[:entropy_bits], 2).to_bytes(entropy_bits // 8, 'big')
+    checksum_bits = len(words) * 11 - entropy_bits
+    h = hashlib.sha256(entropy).digest()
+    expected_checksum = bin(int.from_bytes(h, 'big'))[2:].zfill(256)[:checksum_bits]
+
+    return b[entropy_bits:] == expected_checksum
+
+def mnemonic_to_seed(mnemonic: str, passphrase: str = "") -> bytes:
+    """Convert mnemonic to 64-byte seed using PBKDF2."""
+    import hashlib
+    mnemonic_bytes = mnemonic.encode('utf-8')
+    salt = ("mnemonic" + passphrase).encode('utf-8')
+    return hashlib.pbkdf2_hmac('sha512', mnemonic_bytes, salt, 2048, dklen=64)
+
+# ============================================================================
+#                           BIP32 HD KEY DERIVATION
+# ============================================================================
+
+# secp256k1 curve parameters
+SECP256K1_P = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
+SECP256K1_N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
+SECP256K1_Gx = 0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798
+SECP256K1_Gy = 0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8
+
+def _modinv(a: int, m: int) -> int:
+    """Modular multiplicative inverse using extended Euclidean algorithm."""
+    if a < 0:
+        a = a % m
+    g, x, _ = _extended_gcd(a, m)
+    if g != 1:
+        raise ValueError("Modular inverse does not exist")
+    return x % m
+
+def _extended_gcd(a: int, b: int) -> Tuple[int, int, int]:
+    if a == 0:
+        return b, 0, 1
+    gcd, x1, y1 = _extended_gcd(b % a, a)
+    x = y1 - (b // a) * x1
+    y = x1
+    return gcd, x, y
+
+def _point_add(p1: Optional[Tuple[int, int]], p2: Optional[Tuple[int, int]]) -> Optional[Tuple[int, int]]:
+    """Add two points on secp256k1 curve."""
+    if p1 is None:
+        return p2
+    if p2 is None:
+        return p1
+
+    x1, y1 = p1
+    x2, y2 = p2
+
+    if x1 == x2 and y1 != y2:
+        return None
+
+    if x1 == x2:
+        m = (3 * x1 * x1 * _modinv(2 * y1, SECP256K1_P)) % SECP256K1_P
+    else:
+        m = ((y2 - y1) * _modinv(x2 - x1, SECP256K1_P)) % SECP256K1_P
+
+    x3 = (m * m - x1 - x2) % SECP256K1_P
+    y3 = (m * (x1 - x3) - y1) % SECP256K1_P
+    return (x3, y3)
+
+def _point_multiply(k: int, point: Optional[Tuple[int, int]] = None) -> Optional[Tuple[int, int]]:
+    """Multiply point by scalar on secp256k1 curve."""
+    if point is None:
+        point = (SECP256K1_Gx, SECP256K1_Gy)
+
+    result = None
+    addend = point
+
+    while k:
+        if k & 1:
+            result = _point_add(result, addend)
+        addend = _point_add(addend, addend)
+        k >>= 1
+
+    return result
+
+def _privkey_to_pubkey(privkey: bytes) -> bytes:
+    """Derive uncompressed public key from private key."""
+    k = int.from_bytes(privkey, 'big')
+    point = _point_multiply(k)
+    if point is None:
+        raise ValueError("Invalid private key")
+    x, y = point
+    return b'\x04' + x.to_bytes(32, 'big') + y.to_bytes(32, 'big')
+
+def _serialize_pubkey_compressed(pubkey: bytes) -> bytes:
+    """Serialize public key in compressed format."""
+    if len(pubkey) == 33:
+        return pubkey
+    if len(pubkey) != 65 or pubkey[0] != 0x04:
+        raise ValueError("Invalid public key")
+    x = pubkey[1:33]
+    y = int.from_bytes(pubkey[33:65], 'big')
+    prefix = b'\x02' if y % 2 == 0 else b'\x03'
+    return prefix + x
+
+def derive_master_key(seed: bytes) -> Tuple[bytes, bytes]:
+    """Derive master private key and chain code from seed (BIP32)."""
+    I = hmac.new(b"Bitcoin seed", seed, hashlib.sha512).digest()
+    master_key = I[:32]
+    chain_code = I[32:]
+
+    # Verify key is valid
+    k = int.from_bytes(master_key, 'big')
+    if k == 0 or k >= SECP256K1_N:
+        raise ValueError("Invalid master key derived")
+
+    return master_key, chain_code
+
+def derive_child_key(parent_key: bytes, parent_chain: bytes, index: int, hardened: bool = False) -> Tuple[bytes, bytes]:
+    """Derive child private key from parent (BIP32)."""
+    if hardened:
+        index += 0x80000000
+        data = b'\x00' + parent_key + index.to_bytes(4, 'big')
+    else:
+        pubkey = _privkey_to_pubkey(parent_key)
+        pubkey_compressed = _serialize_pubkey_compressed(pubkey)
+        data = pubkey_compressed + index.to_bytes(4, 'big')
+
+    I = hmac.new(parent_chain, data, hashlib.sha512).digest()
+    IL, IR = I[:32], I[32:]
+
+    child_key = (int.from_bytes(IL, 'big') + int.from_bytes(parent_key, 'big')) % SECP256K1_N
+    if child_key == 0:
+        raise ValueError("Invalid child key")
+
+    return child_key.to_bytes(32, 'big'), IR
+
+def derive_bip44_key(seed: bytes, account: int = 0, change: int = 0, index: int = 0,
+                     coin_type: int = 0) -> Tuple[bytes, bytes]:
+    """
+    Derive BIP44 key: m/44'/coin'/account'/change/index
+    coin_type: 0 = Bitcoin mainnet, 1 = testnet
+    Returns (private_key, public_key_uncompressed)
+    """
+    master_key, chain_code = derive_master_key(seed)
+
+    # m/44' (purpose)
+    key, chain = derive_child_key(master_key, chain_code, 44, hardened=True)
+    # m/44'/coin' (coin type)
+    key, chain = derive_child_key(key, chain, coin_type, hardened=True)
+    # m/44'/coin'/account' (account)
+    key, chain = derive_child_key(key, chain, account, hardened=True)
+    # m/44'/coin'/account'/change (external/internal)
+    key, chain = derive_child_key(key, chain, change, hardened=False)
+    # m/44'/coin'/account'/change/index (address index)
+    key, chain = derive_child_key(key, chain, index, hardened=False)
+
+    pubkey = _privkey_to_pubkey(key)
+    return key, pubkey
+
+def derive_bip84_key(seed: bytes, account: int = 0, change: int = 0, index: int = 0,
+                     coin_type: int = 0) -> Tuple[bytes, bytes]:
+    """
+    Derive BIP84 key (Native SegWit): m/84'/coin'/account'/change/index
+    coin_type: 0 = Bitcoin mainnet, 1 = testnet
+    Returns (private_key, public_key_uncompressed)
+    """
+    master_key, chain_code = derive_master_key(seed)
+
+    # m/84' (purpose - native segwit)
+    key, chain = derive_child_key(master_key, chain_code, 84, hardened=True)
+    # m/84'/coin'
+    key, chain = derive_child_key(key, chain, coin_type, hardened=True)
+    # m/84'/coin'/account'
+    key, chain = derive_child_key(key, chain, account, hardened=True)
+    # m/84'/coin'/account'/change
+    key, chain = derive_child_key(key, chain, change, hardened=False)
+    # m/84'/coin'/account'/change/index
+    key, chain = derive_child_key(key, chain, index, hardened=False)
+
+    pubkey = _privkey_to_pubkey(key)
+    return key, pubkey
 
 # ============================================================================
 #                           SIGNATURE UTILITIES
@@ -557,18 +1036,224 @@ def se050_get_uid() -> Optional[str]:
     except SE050Error:
         return None
 
-def se050_get_random(num_bytes: int = 10) -> Optional[bytes]:
-    """Get random bytes from SE050 TRNG"""
-    try:
-        result = run_ssscli(['se05x', 'getrng'])
-        for line in result.stdout.split('\n'):
-            if 'random' in line.lower():
+def se050_get_random(num_bytes: int = 16) -> Optional[bytes]:
+    """
+    Get random bytes from SE050 TRNG (True Random Number Generator).
+    
+    The SE050 TRNG is AIS31 PTG.2 compliant, providing high-quality 
+    hardware-generated random numbers.
+    
+    Note: ssscli se05x getrng returns exactly 10 bytes per call.
+    For more bytes, we call multiple times and concatenate.
+    
+    Args:
+        num_bytes: Number of random bytes requested (default 16)
+        
+    Returns:
+        Random bytes from SE050, or None on failure
+    """
+    collected = bytearray()
+    calls_needed = (num_bytes + 9) // 10  # Ceiling division by 10
+    
+    for i in range(calls_needed):
+        try:
+            result = run_ssscli(['se05x', 'getrng'])
+            
+            # Parse output - format is:
+            # "Random number: b1d5554c82fb6ee0e2ec"
+            # or just the hex on its own line
+            chunk = None
+            for line in result.stdout.split('\n'):
+                line = line.strip()
+                
+                # Skip info/warning lines
+                if not line or line.startswith('sss') or line.startswith('smCom'):
+                    continue
+                
+                # Look for "Random number:" prefix
+                if 'random number:' in line.lower():
+                    # Extract hex after the colon
+                    parts = line.split(':')
+                    if len(parts) >= 2:
+                        hex_str = parts[-1].strip()
+                        hex_str = ''.join(c for c in hex_str if c in '0123456789abcdefABCDEF')
+                        if len(hex_str) >= 2:
+                            chunk = bytes.fromhex(hex_str)
+                            break
+                
+                # Or just a line of hex (20 chars = 10 bytes)
                 hex_str = ''.join(c for c in line if c in '0123456789abcdefABCDEF')
-                if hex_str:
-                    return bytes.fromhex(hex_str)
+                if len(hex_str) == 20:  # Exactly 10 bytes
+                    chunk = bytes.fromhex(hex_str)
+                    break
+            
+            if chunk:
+                collected.extend(chunk)
+            else:
+                # Failed to parse this call
+                print(f"Warning: Failed to parse SE050 getrng output (call {i+1})")
+                
+        except SE050Error as e:
+            print(f"Warning: SE050 getrng failed (call {i+1}): {e}")
+            break
+    
+    if len(collected) >= num_bytes:
+        return bytes(collected[:num_bytes])
+    elif len(collected) > 0:
+        # Got partial data
+        return bytes(collected)
+    else:
         return None
-    except SE050Error:
-        return None
+
+
+def verify_entropy_quality(data: bytes, min_bytes: int = 16) -> dict:
+    """
+    Perform basic entropy quality checks on random data.
+    
+    This is NOT a replacement for formal NIST SP800-90B testing,
+    but catches obvious problems like all-zeros, repeating patterns,
+    or heavily biased data.
+    
+    Args:
+        data: Random bytes to test
+        min_bytes: Minimum bytes required
+        
+    Returns:
+        Dict with 'passed' bool and 'details' list of check results
+    """
+    results = {
+        'passed': True,
+        'details': [],
+        'entropy_estimate': 0.0
+    }
+    
+    if len(data) < min_bytes:
+        results['passed'] = False
+        results['details'].append(f"FAIL: Only {len(data)} bytes, need {min_bytes}")
+        return results
+    
+    results['details'].append(f"OK: Got {len(data)} bytes")
+    
+    # Check 1: Not all zeros
+    if data == bytes(len(data)):
+        results['passed'] = False
+        results['details'].append("FAIL: All zeros")
+        return results
+    results['details'].append("OK: Not all zeros")
+    
+    # Check 2: Not all same byte
+    if len(set(data)) == 1:
+        results['passed'] = False
+        results['details'].append(f"FAIL: All bytes are 0x{data[0]:02x}")
+        return results
+    
+    unique_bytes = len(set(data))
+    results['details'].append(f"OK: {unique_bytes} unique byte values")
+    
+    # Check 3: Minimum unique bytes for sample size
+    # For 16 bytes of good random data, expect at least 10+ unique values
+    min_unique = max(len(data) // 2, 6)
+    if unique_bytes < min_unique:
+        results['passed'] = False
+        results['details'].append(f"FAIL: Only {unique_bytes} unique bytes (expected ≥{min_unique})")
+        return results
+    
+    # Check 4: Byte frequency - no single byte should dominate
+    from collections import Counter
+    freq = Counter(data)
+    max_freq = max(freq.values())
+    
+    # For 16 bytes, a byte appearing 4+ times is suspicious
+    # For 20 bytes, 5+ times is suspicious
+    max_allowed = max(len(data) // 4, 3)
+    if max_freq > max_allowed:
+        results['passed'] = False
+        most_common_byte, count = freq.most_common(1)[0]
+        results['details'].append(f"FAIL: Byte 0x{most_common_byte:02x} appears {count} times")
+        return results
+    results['details'].append(f"OK: Max byte frequency {max_freq}/{len(data)}")
+    
+    # Check 5: Bit balance (should be roughly 50% ones)
+    ones = sum(bin(b).count('1') for b in data)
+    total_bits = len(data) * 8
+    bit_ratio = ones / total_bits
+    
+    # For 16 bytes (128 bits), allow 35-65% range
+    # Statistically, stddev ≈ sqrt(n*0.5*0.5) = sqrt(32) ≈ 5.7 bits
+    # 3 sigma = ~17 bits, so 64±17 = 47-81 ones (37%-63%)
+    tolerance = 0.15  # 35-65%
+    
+    if abs(bit_ratio - 0.5) > tolerance:
+        results['passed'] = False
+        results['details'].append(f"FAIL: Bit ratio {bit_ratio:.1%} (expected 35-65%)")
+        return results
+    results['details'].append(f"OK: Bit ratio {bit_ratio:.1%}")
+    
+    # Check 6: No obvious repeating pattern (2 or 4 byte repeat)
+    for pattern_len in [2, 4]:
+        if len(data) >= pattern_len * 2:
+            pattern = data[:pattern_len]
+            repeated = (pattern * ((len(data) // pattern_len) + 1))[:len(data)]
+            if data == repeated:
+                results['passed'] = False
+                results['details'].append(f"FAIL: Repeating {pattern_len}-byte pattern detected")
+                return results
+    results['details'].append("OK: No repeating patterns")
+    
+    # Estimate Shannon entropy (bits per byte)
+    import math
+    entropy = 0.0
+    for count in freq.values():
+        if count > 0:
+            p = count / len(data)
+            entropy -= p * math.log2(p)
+    
+    results['entropy_estimate'] = entropy
+    results['details'].append(f"OK: Estimated entropy {entropy:.2f} bits/byte")
+    
+    # For small samples, entropy estimate will be lower than true entropy
+    # Don't fail on this, just note it
+    if entropy < 3.0:
+        results['details'].append(f"WARN: Low entropy estimate (may be sample size effect)")
+    
+    return results
+
+
+def get_verified_entropy(num_bytes: int = 16, max_attempts: int = 3) -> Optional[bytes]:
+    """
+    Get random bytes from SE050 TRNG with quality verification.
+    
+    Uses SE050 hardware TRNG directly - AIS31 PTG.2 certified.
+    No software PRNG mixing needed.
+    
+    Args:
+        num_bytes: Number of bytes needed
+        max_attempts: Max retry attempts if quality check fails
+        
+    Returns:
+        High-quality random bytes from SE050 TRNG, or None on failure
+    """
+    for attempt in range(max_attempts):
+        # Get SE050 TRNG bytes
+        se050_random = se050_get_random(num_bytes)
+        
+        if se050_random and len(se050_random) >= num_bytes:
+            # Verify quality (sanity check only - TRNG is certified)
+            quality = verify_entropy_quality(se050_random[:num_bytes], min_bytes=num_bytes)
+            
+            if quality['passed']:
+                return se050_random[:num_bytes]
+            else:
+                print(f"SE050 TRNG quality check failed (attempt {attempt + 1}):")
+                for detail in quality['details']:
+                    print(f"  {detail}")
+        else:
+            got = len(se050_random) if se050_random else 0
+            print(f"SE050 TRNG returned {got}/{num_bytes} bytes (attempt {attempt + 1})")
+    
+    # All attempts failed
+    print("ERROR: SE050 TRNG unavailable or failed quality checks")
+    return None
 
 def se050_generate_keypair(key_id: str, curve: str = "Secp256k1") -> bool:
     """Generate ECC keypair on SE050"""
@@ -578,6 +1263,262 @@ def se050_generate_keypair(key_id: str, curve: str = "Secp256k1") -> bool:
     except SE050Error as e:
         print(f"Key generation failed: {e}")
         return False
+
+def _derive_pubkey_uncompressed(private_key: bytes) -> bytes:
+    """
+    Derive uncompressed public key (65 bytes: 0x04 + X + Y) from private key.
+    Uses secp256k1 curve.
+    """
+    # secp256k1 parameters
+    P = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEFFFFFC2F
+    A = 0
+    B = 7
+    Gx = 0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798
+    Gy = 0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8
+    
+    def modinv(a, m):
+        if a < 0:
+            a = m + a
+        g, x, _ = extended_gcd(a, m)
+        if g != 1:
+            raise ValueError("No modular inverse")
+        return x % m
+    
+    def extended_gcd(a, b):
+        if a == 0:
+            return b, 0, 1
+        gcd, x1, y1 = extended_gcd(b % a, a)
+        x = y1 - (b // a) * x1
+        y = x1
+        return gcd, x, y
+    
+    def point_add(p1, p2):
+        if p1 is None:
+            return p2
+        if p2 is None:
+            return p1
+        x1, y1 = p1
+        x2, y2 = p2
+        if x1 == x2:
+            if y1 != y2:
+                return None
+            # Point doubling
+            s = (3 * x1 * x1 + A) * modinv(2 * y1, P) % P
+        else:
+            s = (y2 - y1) * modinv(x2 - x1, P) % P
+        x3 = (s * s - x1 - x2) % P
+        y3 = (s * (x1 - x3) - y1) % P
+        return (x3, y3)
+    
+    def scalar_mult(k, point):
+        result = None
+        addend = point
+        while k:
+            if k & 1:
+                result = point_add(result, addend)
+            addend = point_add(addend, addend)
+            k >>= 1
+        return result
+    
+    k = int.from_bytes(private_key, 'big')
+    pub_point = scalar_mult(k, (Gx, Gy))
+    
+    pub_x = pub_point[0].to_bytes(32, 'big')
+    pub_y = pub_point[1].to_bytes(32, 'big')
+    
+    return b'\x04' + pub_x + pub_y
+
+
+def _build_sec1_der(private_key: bytes, include_pubkey: bool = True) -> bytes:
+    """
+    Build SEC1 EC private key in DER format for secp256k1.
+    
+    Structure:
+    ECPrivateKey ::= SEQUENCE {
+      version        INTEGER { ecPrivkeyVer1(1) } (ecPrivkeyVer1),
+      privateKey     OCTET STRING,
+      parameters [0] ECParameters {{ NamedCurve }} OPTIONAL,
+      publicKey  [1] BIT STRING OPTIONAL
+    }
+    """
+    # secp256k1 OID: 1.3.132.0.10
+    secp256k1_oid = bytes([0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x0a])
+    
+    # Build inner sequence
+    version = bytes([0x02, 0x01, 0x01])  # INTEGER 1
+    priv_octet = bytes([0x04, 0x20]) + private_key  # OCTET STRING (32 bytes)
+    params = bytes([0xa0, len(secp256k1_oid)]) + secp256k1_oid  # [0] EXPLICIT
+    
+    inner = version + priv_octet + params
+    
+    # Optionally include public key
+    if include_pubkey:
+        pubkey = _derive_pubkey_uncompressed(private_key)
+        # BIT STRING: 0x03 <length> 0x00 (no unused bits) <pubkey>
+        bitstring_content = bytes([0x00]) + pubkey  # 66 bytes
+        pubkey_bitstring = bytes([0x03, len(bitstring_content)]) + bitstring_content
+        # Wrap in [1] EXPLICIT
+        pubkey_tagged = bytes([0xa1, len(pubkey_bitstring)]) + pubkey_bitstring
+        inner = inner + pubkey_tagged
+    
+    # Wrap in SEQUENCE
+    if len(inner) < 128:
+        der = bytes([0x30, len(inner)]) + inner
+    else:
+        der = bytes([0x30, 0x81, len(inner)]) + inner
+    
+    return der
+
+
+def _build_raw_keypair(private_key: bytes) -> bytes:
+    """
+    Build raw keypair format: just the 32-byte private key.
+    Some ssscli versions expect this.
+    """
+    return private_key
+
+
+def _build_pkcs8_der(private_key: bytes) -> bytes:
+    """
+    Build PKCS#8 wrapped EC private key for secp256k1.
+    
+    Structure:
+    PrivateKeyInfo ::= SEQUENCE {
+      version                   Version,
+      privateKeyAlgorithm       PrivateKeyAlgorithmIdentifier,
+      privateKey                PrivateKey,
+    }
+    """
+    # Algorithm identifier for EC with secp256k1
+    # SEQUENCE { OID ecPublicKey, OID secp256k1 }
+    ec_oid = bytes([0x06, 0x07, 0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01])  # 1.2.840.10045.2.1
+    secp256k1_oid = bytes([0x06, 0x05, 0x2b, 0x81, 0x04, 0x00, 0x0a])  # 1.3.132.0.10
+    algo_seq = bytes([0x30, len(ec_oid) + len(secp256k1_oid)]) + ec_oid + secp256k1_oid
+    
+    # Inner EC private key (SEC1 with public key)
+    inner_ec = _build_sec1_der(private_key, include_pubkey=True)
+    
+    # Wrap as OCTET STRING
+    ec_privkey_octet = bytes([0x04, len(inner_ec)]) + inner_ec
+    
+    # PKCS#8 version
+    pkcs8_version = bytes([0x02, 0x01, 0x00])
+    
+    # Full PKCS#8 sequence
+    inner = pkcs8_version + algo_seq + ec_privkey_octet
+    if len(inner) < 128:
+        return bytes([0x30, len(inner)]) + inner
+    else:
+        return bytes([0x30, 0x81, len(inner)]) + inner
+
+
+def se050_set_ecc_keypair(key_id: str, private_key: bytes, curve: str = "Secp256k1") -> bool:
+    """
+    Import/set an ECC keypair on SE050 from a private key.
+    The private key is written to the SE050 - after this, the SE050 holds the key.
+
+    Args:
+        key_id: SE050 key slot ID (hex string like "20000001")
+        private_key: 32-byte secp256k1 private key
+        curve: Curve type (default Secp256k1)
+
+    Returns:
+        True if successful
+    """
+    if len(private_key) != 32:
+        raise ValueError(f"Private key must be 32 bytes, got {len(private_key)}")
+
+    key_file = Path("/tmp/se050_import_key.bin")
+    last_error = None
+    
+    # First, ensure any existing key is deleted
+    print(f"  Checking if key 0x{key_id} exists...")
+    if se050_key_exists(key_id):
+        print(f"  Key exists, deleting...")
+        try:
+            result = subprocess.run(
+                ['ssscli', 'erase', key_id],
+                capture_output=True, text=True, timeout=15
+            )
+            if result.returncode != 0:
+                print(f"  Warning: Could not delete existing key: {result.stderr or result.stdout}")
+            else:
+                print(f"  Existing key deleted")
+                import time
+                time.sleep(0.3)  # Give SE050 time to settle
+        except Exception as e:
+            print(f"  Warning: Delete failed: {e}")
+    
+    # Derive public key for formats that need it
+    pubkey_uncompressed = _derive_pubkey_uncompressed(private_key)
+    # Raw keypair: 32-byte privkey + 64-byte pubkey (without 0x04 prefix)
+    raw_keypair = private_key + pubkey_uncompressed[1:]  # 96 bytes total
+    
+    # Try multiple formats - SE050/ssscli versions vary in what they accept
+    # Also try both 'pair' and 'keypair' commands as ssscli versions differ
+    formats_to_try = [
+        # (command, format_flag, key_data, description, extra_args)
+        # DER formats first (most likely to work)
+        ('pair', "DER", _build_sec1_der(private_key), "SEC1 DER with pubkey (pair)", []),
+        ('keypair', "DER", _build_sec1_der(private_key), "SEC1 DER with pubkey (keypair)", []),
+        ('pair', "DER", _build_pkcs8_der(private_key), "PKCS#8 DER (pair)", []),
+        # Raw keypair format (privkey || pubkey)
+        ('pair', "BIN", raw_keypair, "raw 96-byte keypair (pair)", []),
+        ('keypair', "BIN", raw_keypair, "raw 96-byte keypair (keypair)", []),
+        # Just private key
+        ('pair', "BIN", private_key, "raw 32-byte privkey (pair)", []),
+        ('keypair', "BIN", private_key, "raw 32-byte privkey (keypair)", []),
+        # SEC1 without pubkey
+        ('pair', "DER", _build_sec1_der(private_key, include_pubkey=False), "SEC1 DER no pubkey (pair)", []),
+        # Try without format flag
+        ('pair', None, _build_sec1_der(private_key), "SEC1 auto-detect (pair)", []),
+        ('keypair', None, raw_keypair, "raw keypair auto-detect", []),
+    ]
+    
+    for cmd_type, fmt_flag, key_data, desc, extra_args in formats_to_try:
+        try:
+            # Write key data to temp file
+            key_file.write_bytes(key_data)
+            
+            print(f"  Trying {desc} format ({len(key_data)} bytes)...")
+            
+            # Build command - try both 'pair' and 'keypair' variants
+            cmd = ['ssscli', 'set', 'ecc', cmd_type, key_id, str(key_file)]
+            if fmt_flag:
+                cmd.extend(['--format', fmt_flag])
+            cmd.extend(extra_args)
+            
+            # Try to set the key
+            result = subprocess.run(
+                cmd,
+                capture_output=True, text=True, timeout=30
+            )
+            
+            if result.returncode == 0:
+                print(f"  Success with {desc} format!")
+                # Verify key was written
+                if se050_key_exists(key_id):
+                    return True
+                else:
+                    print(f"  Warning: Key set returned success but key not found")
+            else:
+                last_error = result.stderr or result.stdout or "Unknown error"
+                print(f"  {desc} failed: {last_error.strip()[:80]}")
+                
+        except subprocess.TimeoutExpired:
+            last_error = "Command timed out"
+            print(f"  {desc} timed out")
+        except Exception as e:
+            last_error = str(e)
+            print(f"  {desc} exception: {e}")
+        finally:
+            # Securely delete temp file
+            if key_file.exists():
+                key_file.write_bytes(b'\x00' * max(32, len(key_data)))
+                key_file.unlink()
+    
+    # All formats failed
+    raise SE050Error(f"All formats rejected by SE050\nLast error: {last_error}")
 
 def se050_export_pubkey(key_id: str, output_path: Path, format: str = "DER") -> bool:
     """Export public key from SE050"""
@@ -815,6 +1756,9 @@ def varint(n: int) -> bytes:
     else:
         return b'\xff' + n.to_bytes(8, 'little')
 
+# Alias for consistency
+encode_varint = varint
+
 def build_p2wpkh_sighash_preimage(
     inputs: List[Dict],
     outputs: List[Dict],
@@ -980,6 +1924,362 @@ class Wallet:
         return hash160(self.pubkey_compressed)
 
 # ============================================================================
+#                              RBF & CPFP SUPPORT
+# ============================================================================
+
+def build_rbf_transaction(
+    original_tx: Dict,
+    new_fee_rate: int,
+    wallet: 'Wallet',
+    key_id: str
+) -> Tuple[str, str]:
+    """
+    Build an RBF (Replace-By-Fee) transaction to bump fee on unconfirmed tx.
+    
+    Args:
+        original_tx: The original transaction data from mempool API
+        new_fee_rate: Target fee rate in sat/vB
+        wallet: Wallet instance for signing
+        key_id: SE050 key ID
+    
+    Returns:
+        Tuple of (raw_tx_hex, new_txid)
+    """
+    our_addresses = {wallet.addresses['segwit'], wallet.addresses['legacy']}
+    
+    # Collect original inputs
+    inputs = []
+    total_input_value = 0
+    
+    for vin in original_tx.get('vin', []):
+        prevout = vin.get('prevout', {})
+        prev_addr = prevout.get('scriptpubkey_address', '')
+        
+        # Only include inputs we control
+        if prev_addr in our_addresses:
+            inputs.append({
+                'txid': vin.get('txid'),
+                'vout': vin.get('vout'),
+                'value': prevout.get('value', 0),
+                'scriptpubkey': prevout.get('scriptpubkey', ''),
+                'is_segwit': prev_addr.startswith(('bc1', 'tb1'))
+            })
+            total_input_value += prevout.get('value', 0)
+    
+    if not inputs:
+        raise ValueError("No inputs controlled by this wallet")
+    
+    # Find outputs (keep same destinations, adjust change)
+    outputs = []
+    change_output_idx = None
+    
+    for idx, vout in enumerate(original_tx.get('vout', [])):
+        addr = vout.get('scriptpubkey_address', '')
+        value = vout.get('value', 0)
+        
+        if addr in our_addresses:
+            # This is our change output - we'll adjust it
+            change_output_idx = idx
+            outputs.append({'address': addr, 'value': value, 'is_change': True})
+        else:
+            # External output - keep as-is
+            outputs.append({'address': addr, 'value': value, 'is_change': False})
+    
+    # Calculate new fee
+    tx_vsize = original_tx.get('weight', 0) // 4 or 200
+    new_fee = new_fee_rate * tx_vsize
+    
+    # Adjust change output to pay new fee
+    original_fee = total_input_value - sum(o['value'] for o in outputs)
+    fee_increase = new_fee - original_fee
+    
+    if change_output_idx is not None:
+        for o in outputs:
+            if o['is_change']:
+                o['value'] -= fee_increase
+                if o['value'] < 546:
+                    raise ValueError(f"Not enough in change output to bump fee (need {fee_increase} more sats)")
+                break
+    else:
+        raise ValueError("No change output found to deduct fee from")
+    
+    # Build transaction with RBF signal (sequence = 0xfffffffd)
+    version = 2
+    sequence = 0xfffffffd  # RBF enabled
+    locktime = 0
+    
+    # Serialize inputs
+    tx_inputs = b''
+    tx_inputs += encode_varint(len(inputs))
+    
+    for inp in inputs:
+        tx_inputs += bytes.fromhex(inp['txid'])[::-1]  # txid little-endian
+        tx_inputs += inp['vout'].to_bytes(4, 'little')
+        tx_inputs += b'\x00'  # Empty scriptSig for SegWit
+        tx_inputs += sequence.to_bytes(4, 'little')
+    
+    # Serialize outputs
+    tx_outputs = b''
+    tx_outputs += encode_varint(len(outputs))
+    
+    for out in outputs:
+        tx_outputs += out['value'].to_bytes(8, 'little')
+        script = create_output_script(out['address'])
+        tx_outputs += encode_varint(len(script)) + script
+    
+    # Sign each input
+    witnesses = []
+    
+    for i, inp in enumerate(inputs):
+        if inp['is_segwit']:
+            # BIP143 sighash for SegWit
+            sighash = compute_sighash_bip143(
+                inputs, outputs, i, inp['value'],
+                wallet.pubkey_hash, version, sequence, locktime
+            )
+            
+            # Sign with SE050
+            signature = se050_sign(key_id, sighash)
+            
+            # Build witness
+            witness = b'\x02'  # 2 items
+            witness += encode_varint(len(signature) + 1)
+            witness += signature + b'\x01'  # SIGHASH_ALL
+            witness += encode_varint(len(wallet.pubkey_compressed))
+            witness += wallet.pubkey_compressed
+            
+            witnesses.append(witness)
+        else:
+            raise ValueError("RBF only supported for SegWit inputs currently")
+    
+    # Assemble final transaction
+    raw_tx = b''
+    raw_tx += version.to_bytes(4, 'little')
+    raw_tx += b'\x00\x01'  # SegWit marker and flag
+    raw_tx += tx_inputs[1:]  # Skip varint we added
+    raw_tx += encode_varint(len(inputs))
+    
+    # Re-add inputs properly
+    raw_tx = b''
+    raw_tx += version.to_bytes(4, 'little')
+    raw_tx += b'\x00\x01'  # SegWit marker
+    raw_tx += encode_varint(len(inputs))
+    
+    for inp in inputs:
+        raw_tx += bytes.fromhex(inp['txid'])[::-1]
+        raw_tx += inp['vout'].to_bytes(4, 'little')
+        raw_tx += b'\x00'  # Empty scriptSig
+        raw_tx += sequence.to_bytes(4, 'little')
+    
+    # Outputs
+    raw_tx += encode_varint(len(outputs))
+    for out in outputs:
+        raw_tx += out['value'].to_bytes(8, 'little')
+        script = create_output_script(out['address'])
+        raw_tx += encode_varint(len(script)) + script
+    
+    # Witnesses
+    for w in witnesses:
+        raw_tx += w
+    
+    # Locktime
+    raw_tx += locktime.to_bytes(4, 'little')
+    
+    # Calculate txid
+    tx_for_txid = b''
+    tx_for_txid += version.to_bytes(4, 'little')
+    tx_for_txid += encode_varint(len(inputs))
+    for inp in inputs:
+        tx_for_txid += bytes.fromhex(inp['txid'])[::-1]
+        tx_for_txid += inp['vout'].to_bytes(4, 'little')
+        tx_for_txid += b'\x00'
+        tx_for_txid += sequence.to_bytes(4, 'little')
+    tx_for_txid += encode_varint(len(outputs))
+    for out in outputs:
+        tx_for_txid += out['value'].to_bytes(8, 'little')
+        script = create_output_script(out['address'])
+        tx_for_txid += encode_varint(len(script)) + script
+    tx_for_txid += locktime.to_bytes(4, 'little')
+    
+    new_txid = sha256d(tx_for_txid)[::-1].hex()
+    
+    return raw_tx.hex(), new_txid
+
+
+def build_cpfp_transaction(
+    spendable_outputs: List[Dict],
+    child_fee: int,
+    wallet: 'Wallet',
+    key_id: str
+) -> Tuple[str, str]:
+    """
+    Build a CPFP (Child-Pays-For-Parent) transaction.
+    
+    Spends outputs from an unconfirmed parent to create a high-fee child
+    that incentivizes miners to confirm both transactions.
+    
+    Args:
+        spendable_outputs: List of UTXOs from parent tx that we control
+        child_fee: Fee for the child transaction in sats
+        wallet: Wallet instance
+        key_id: SE050 key ID
+    
+    Returns:
+        Tuple of (raw_tx_hex, txid)
+    """
+    if not spendable_outputs:
+        raise ValueError("No spendable outputs provided")
+    
+    # Calculate total input
+    total_input = sum(o['value'] for o in spendable_outputs)
+    
+    # Output goes back to our SegWit address
+    output_value = total_input - child_fee
+    
+    if output_value < 546:
+        raise ValueError(f"Output would be dust ({output_value} sats). Need more input value or lower fee.")
+    
+    output_address = wallet.addresses['segwit']
+    
+    # Build transaction
+    version = 2
+    sequence = 0xfffffffd  # RBF enabled for future bumps
+    locktime = 0
+    
+    inputs = []
+    for utxo in spendable_outputs:
+        inputs.append({
+            'txid': utxo['txid'],
+            'vout': utxo['vout'],
+            'value': utxo['value'],
+            'is_segwit': utxo['address'].startswith(('bc1', 'tb1'))
+        })
+    
+    outputs = [{'address': output_address, 'value': output_value}]
+    
+    # Sign each input
+    witnesses = []
+    
+    for i, inp in enumerate(inputs):
+        if inp['is_segwit']:
+            # BIP143 sighash
+            sighash = compute_sighash_bip143(
+                inputs, outputs, i, inp['value'],
+                wallet.pubkey_hash, version, sequence, locktime
+            )
+            
+            signature = se050_sign(key_id, sighash)
+            
+            witness = b'\x02'
+            witness += encode_varint(len(signature) + 1)
+            witness += signature + b'\x01'
+            witness += encode_varint(len(wallet.pubkey_compressed))
+            witness += wallet.pubkey_compressed
+            
+            witnesses.append(witness)
+        else:
+            raise ValueError("CPFP only supported for SegWit inputs")
+    
+    # Assemble transaction
+    raw_tx = b''
+    raw_tx += version.to_bytes(4, 'little')
+    raw_tx += b'\x00\x01'  # SegWit marker
+    raw_tx += encode_varint(len(inputs))
+    
+    for inp in inputs:
+        raw_tx += bytes.fromhex(inp['txid'])[::-1]
+        raw_tx += inp['vout'].to_bytes(4, 'little')
+        raw_tx += b'\x00'
+        raw_tx += sequence.to_bytes(4, 'little')
+    
+    raw_tx += encode_varint(len(outputs))
+    for out in outputs:
+        raw_tx += out['value'].to_bytes(8, 'little')
+        script = create_output_script(out['address'])
+        raw_tx += encode_varint(len(script)) + script
+    
+    for w in witnesses:
+        raw_tx += w
+    
+    raw_tx += locktime.to_bytes(4, 'little')
+    
+    # Calculate txid (without witness)
+    tx_for_txid = b''
+    tx_for_txid += version.to_bytes(4, 'little')
+    tx_for_txid += encode_varint(len(inputs))
+    for inp in inputs:
+        tx_for_txid += bytes.fromhex(inp['txid'])[::-1]
+        tx_for_txid += inp['vout'].to_bytes(4, 'little')
+        tx_for_txid += b'\x00'
+        tx_for_txid += sequence.to_bytes(4, 'little')
+    tx_for_txid += encode_varint(len(outputs))
+    for out in outputs:
+        tx_for_txid += out['value'].to_bytes(8, 'little')
+        script = create_output_script(out['address'])
+        tx_for_txid += encode_varint(len(script)) + script
+    tx_for_txid += locktime.to_bytes(4, 'little')
+    
+    txid = sha256d(tx_for_txid)[::-1].hex()
+    
+    return raw_tx.hex(), txid
+
+
+def compute_sighash_bip143(
+    inputs: List[Dict],
+    outputs: List[Dict],
+    input_index: int,
+    input_value: int,
+    pubkey_hash: bytes,
+    version: int = 2,
+    sequence: int = 0xfffffffd,
+    locktime: int = 0
+) -> bytes:
+    """
+    Compute BIP143 sighash for SegWit transaction signing.
+    """
+    # hashPrevouts
+    prevouts = b''
+    for inp in inputs:
+        prevouts += bytes.fromhex(inp['txid'])[::-1]
+        prevouts += inp['vout'].to_bytes(4, 'little')
+    hash_prevouts = sha256d(prevouts)
+    
+    # hashSequence
+    sequences = b''
+    for _ in inputs:
+        sequences += sequence.to_bytes(4, 'little')
+    hash_sequence = sha256d(sequences)
+    
+    # hashOutputs
+    outputs_data = b''
+    for out in outputs:
+        outputs_data += out['value'].to_bytes(8, 'little')
+        script = create_output_script(out['address'])
+        outputs_data += encode_varint(len(script)) + script
+    hash_outputs = sha256d(outputs_data)
+    
+    # scriptCode for P2WPKH
+    script_code = b'\x19\x76\xa9\x14' + pubkey_hash + b'\x88\xac'
+    
+    # Build preimage
+    inp = inputs[input_index]
+    preimage = b''
+    preimage += version.to_bytes(4, 'little')
+    preimage += hash_prevouts
+    preimage += hash_sequence
+    preimage += bytes.fromhex(inp['txid'])[::-1]
+    preimage += inp['vout'].to_bytes(4, 'little')
+    preimage += script_code
+    preimage += input_value.to_bytes(8, 'little')
+    preimage += sequence.to_bytes(4, 'little')
+    preimage += hash_outputs
+    preimage += locktime.to_bytes(4, 'little')
+    preimage += b'\x01\x00\x00\x00'  # SIGHASH_ALL
+    
+    return sha256(preimage)  # Single SHA256 - SE050 does the second
+
+
+# ============================================================================
 #                              CLI COMMANDS
 # ============================================================================
 
@@ -1074,6 +2374,225 @@ def cmd_init(args):
         print("=" * 60)
         print("")
     
+    return 0
+
+def cmd_create(args):
+    """Create new wallet with seed phrase backup"""
+    print("")
+    print("=" * 60)
+    print("SE050 HARDWARE WALLET - CREATE WITH SEED PHRASE")
+    print("=" * 60)
+
+    Config.WALLET_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Check if wallet already exists
+    if Config.pubkey_der_path().exists():
+        print("")
+        print(f"[!] Wallet already exists for Key ID 0x{Config.KEY_ID}")
+        confirm = input("    Overwrite? [y/N]: ")
+        if confirm.lower() != 'y':
+            print("    Cancelled.")
+            return 1
+
+    # Connect to SE050
+    print("")
+    print("[1/5] Connecting to SE050...")
+    if not se050_connect():
+        print("      [FAIL] Failed to connect to SE050")
+        return 1
+    print("      [OK] Connected")
+
+    # Generate mnemonic
+    strength = 256 if args.words == 24 else 128
+    print("")
+    print(f"[2/5] Generating {args.words}-word seed phrase...")
+    mnemonic = generate_mnemonic(strength)
+
+    print("")
+    print("=" * 60)
+    print("WRITE DOWN THESE WORDS - THIS IS YOUR ONLY BACKUP!")
+    print("=" * 60)
+    print("")
+    words = mnemonic.split()
+    for i, word in enumerate(words, 1):
+        print(f"  {i:2d}. {word}")
+    print("")
+    print("=" * 60)
+    print("WARNING: If you lose these words, you lose your Bitcoin!")
+    print("         Never store them digitally. Write on paper only.")
+    print("=" * 60)
+    print("")
+
+    # Verify user wrote it down
+    confirm = input("Have you written down your seed phrase? [y/N]: ")
+    if confirm.lower() != 'y':
+        print("Please write down your seed phrase before continuing.")
+        return 1
+
+    print("")
+    verify = input("Enter word #1 to verify: ").strip().lower()
+    if verify != words[0]:
+        print(f"Incorrect! Expected '{words[0]}'. Please try again.")
+        return 1
+
+    verify = input(f"Enter word #{len(words)} to verify: ").strip().lower()
+    if verify != words[-1]:
+        print(f"Incorrect! Expected '{words[-1]}'. Please try again.")
+        return 1
+
+    # Derive key from seed
+    print("")
+    print("[3/5] Deriving private key from seed...")
+    seed = mnemonic_to_seed(mnemonic)
+    coin_type = 1 if Config.NETWORK == "testnet" else 0
+    private_key, pubkey = derive_bip84_key(seed, coin_type=coin_type)
+    print("      [OK] Key derived (m/84'/0'/0'/0/0)")
+
+    # Delete existing key if present
+    if se050_key_exists(Config.KEY_ID):
+        se050_delete_key(Config.KEY_ID)
+
+    # Write key to SE050
+    print("")
+    print(f"[4/5] Writing private key to SE050 slot 0x{Config.KEY_ID}...")
+    if not se050_set_ecc_keypair(Config.KEY_ID, private_key):
+        print("      [FAIL] Failed to write key to SE050")
+        return 1
+    print("      [OK] Private key stored in SE050")
+
+    # Export public key
+    print("")
+    print("[5/5] Exporting public key...")
+    if not se050_export_pubkey(Config.KEY_ID, Config.pubkey_der_path(), "DER"):
+        print("      [FAIL] Export failed")
+        return 1
+    se050_export_pubkey(Config.KEY_ID, Config.pubkey_pem_path(), "PEM")
+    print(f"      [OK] Saved to {Config.pubkey_der_path()}")
+
+    # Load and display wallet
+    wallet = Wallet()
+    wallet.created_at = datetime.now().isoformat()
+    if wallet.load():
+        wallet.save_info()
+
+        print("")
+        print("=" * 60)
+        print("WALLET CREATED SUCCESSFULLY")
+        print("=" * 60)
+        print(f"")
+        print(f"Key ID:     0x{Config.KEY_ID}")
+        print(f"Network:    {Config.NETWORK}")
+        print(f"Derivation: m/84'/0'/0'/0/0 (BIP84 Native SegWit)")
+        print(f"")
+        print(f"RECEIVE ADDRESSES:")
+        print(f"  SegWit:  {wallet.addresses['segwit']}")
+        print(f"  Legacy:  {wallet.addresses['legacy']}")
+        print("")
+        print("BACKUP:")
+        print("  - Your seed phrase is your backup")
+        print("  - If SE050 is lost, import seed to new chip")
+        print("  - NEVER lose your seed phrase!")
+        print("=" * 60)
+        print("")
+
+    return 0
+
+def cmd_import_seed(args):
+    """Import wallet from seed phrase"""
+    print("")
+    print("=" * 60)
+    print("SE050 HARDWARE WALLET - IMPORT FROM SEED PHRASE")
+    print("=" * 60)
+
+    Config.WALLET_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Check if wallet already exists
+    if Config.pubkey_der_path().exists():
+        print("")
+        print(f"[!] Wallet already exists for Key ID 0x{Config.KEY_ID}")
+        confirm = input("    Overwrite? [y/N]: ")
+        if confirm.lower() != 'y':
+            print("    Cancelled.")
+            return 1
+
+    # Get mnemonic
+    if args.mnemonic:
+        mnemonic = args.mnemonic.strip().lower()
+    else:
+        print("")
+        print("Enter your seed phrase (12 or 24 words):")
+        mnemonic = input("> ").strip().lower()
+
+    # Validate mnemonic
+    if not validate_mnemonic(mnemonic):
+        print("")
+        print("[FAIL] Invalid seed phrase!")
+        print("       Check spelling and word order.")
+        return 1
+
+    words = mnemonic.split()
+    print(f"      [OK] Valid {len(words)}-word seed phrase")
+
+    # Connect to SE050
+    print("")
+    print("[1/4] Connecting to SE050...")
+    if not se050_connect():
+        print("      [FAIL] Failed to connect to SE050")
+        return 1
+    print("      [OK] Connected")
+
+    # Derive key from seed
+    print("")
+    print("[2/4] Deriving private key from seed...")
+    seed = mnemonic_to_seed(mnemonic)
+    coin_type = 1 if Config.NETWORK == "testnet" else 0
+    private_key, pubkey = derive_bip84_key(seed, coin_type=coin_type)
+    print("      [OK] Key derived (m/84'/0'/0'/0/0)")
+
+    # Delete existing key if present
+    if se050_key_exists(Config.KEY_ID):
+        se050_delete_key(Config.KEY_ID)
+
+    # Write key to SE050
+    print("")
+    print(f"[3/4] Writing private key to SE050 slot 0x{Config.KEY_ID}...")
+    if not se050_set_ecc_keypair(Config.KEY_ID, private_key):
+        print("      [FAIL] Failed to write key to SE050")
+        return 1
+    print("      [OK] Private key stored in SE050")
+
+    # Export public key
+    print("")
+    print("[4/4] Exporting public key...")
+    if not se050_export_pubkey(Config.KEY_ID, Config.pubkey_der_path(), "DER"):
+        print("      [FAIL] Export failed")
+        return 1
+    se050_export_pubkey(Config.KEY_ID, Config.pubkey_pem_path(), "PEM")
+    print(f"      [OK] Saved to {Config.pubkey_der_path()}")
+
+    # Load and display wallet
+    wallet = Wallet()
+    wallet.created_at = datetime.now().isoformat()
+    if wallet.load():
+        wallet.save_info()
+
+        print("")
+        print("=" * 60)
+        print("WALLET IMPORTED SUCCESSFULLY")
+        print("=" * 60)
+        print(f"")
+        print(f"Key ID:     0x{Config.KEY_ID}")
+        print(f"Network:    {Config.NETWORK}")
+        print(f"Derivation: m/84'/0'/0'/0/0 (BIP84 Native SegWit)")
+        print(f"")
+        print(f"RECEIVE ADDRESSES:")
+        print(f"  SegWit:  {wallet.addresses['segwit']}")
+        print(f"  Legacy:  {wallet.addresses['legacy']}")
+        print("")
+        print("Your wallet has been restored from your seed phrase.")
+        print("=" * 60)
+        print("")
+
     return 0
 
 def cmd_address(args):
@@ -1835,7 +3354,10 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  %(prog)s init                        Create new wallet
+  %(prog)s create                      Create wallet with seed phrase backup
+  %(prog)s create --words 24           Create wallet with 24-word seed
+  %(prog)s import-seed                 Import wallet from existing seed
+  %(prog)s init                        Create wallet (NO seed backup - legacy)
   %(prog)s address                     Show receive addresses
   %(prog)s address --qr                Show address with QR code
   %(prog)s balance                     Check balance
@@ -1843,17 +3365,12 @@ Examples:
   %(prog)s send bc1q... 10000          Send 10,000 sats
   %(prog)s send bc1q... 0.001btc       Send 0.001 BTC
   %(prog)s send bc1q... $50            Send $50 USD worth
-  %(prog)s send bc1q... 50usd          Send $50 USD worth
-  %(prog)s send bc1q... 50eur          Send 50 EUR worth
   %(prog)s sign-message "Hello"        Sign a message
   %(prog)s history                     Show transaction history
-  %(prog)s watch                       Watch for incoming coins
-  %(prog)s watch -i 60                 Watch, check every 60 seconds
   %(prog)s verify                      Verify SE050 is working
   %(prog)s export                      Export public key info
   %(prog)s wipe                        Delete wallet (DANGER!)
   %(prog)s info                        Show SE050 status
-  %(prog)s reset                       Reset SE050 connection
         """
     )
     
@@ -1862,9 +3379,18 @@ Examples:
     
     subparsers = parser.add_subparsers(dest='command', help='Commands')
     
-    # init
-    subparsers.add_parser('init', help='Initialize new wallet')
-    
+    # init (legacy - generates key on SE050, no backup)
+    subparsers.add_parser('init', help='Initialize wallet (generates key on SE050, NO BACKUP)')
+
+    # create (new - generates seed phrase for backup)
+    create_parser = subparsers.add_parser('create', help='Create new wallet with seed phrase backup')
+    create_parser.add_argument('--words', type=int, choices=[12, 24], default=12,
+                               help='Number of seed words (default: 12)')
+
+    # import-seed (restore from seed phrase)
+    import_parser = subparsers.add_parser('import-seed', help='Import wallet from seed phrase')
+    import_parser.add_argument('mnemonic', nargs='?', help='Seed phrase (or enter interactively)')
+
     # address
     addr_parser = subparsers.add_parser('address', help='Show receive addresses')
     addr_parser.add_argument('--qr', action='store_true', help='Show QR code')
@@ -1914,6 +3440,8 @@ Examples:
     
     commands = {
         'init': cmd_init,
+        'create': cmd_create,
+        'import-seed': cmd_import_seed,
         'address': cmd_address,
         'balance': cmd_balance,
         'send': cmd_send,
