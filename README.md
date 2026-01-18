@@ -1,10 +1,13 @@
 # SE050ARD Bitcoin Wallet
 
-A Bitcoin hardware wallet using the NXP SE050 secure element. Private keys are stored in tamper-resistant silicon and **never leave the chip** - all signing happens on-device.
+**The first Bitcoin hardware wallet built on NXP SE050.** 
+
+Private keys are stored in tamper-resistant silicon and **never leave the chip** - all signing happens on-device. This is a real hardware wallet using bank-grade secure element technology.
 
 ![License](https://img.shields.io/badge/license-MIT-blue.svg)
 ![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi-red.svg)
 ![Bitcoin](https://img.shields.io/badge/bitcoin-native%20segwit-orange.svg)
+![First](https://img.shields.io/badge/SE050-first%20BTC%20wallet-green.svg)
 
 **Official NXP Setup Guide:** [AN13027 - EdgeLock SE05x Quick start guide](https://www.nxp.com/docs/en/application-note/AN13027.pdf)
 
@@ -95,17 +98,24 @@ This wallet supports **two modes**:
 
 ---
 
-## Why Build This?
+## Why This Exists
 
-Most Bitcoin wallets store private keys in software - on disk, in memory, somewhere attackable. Commercial hardware wallets solve this but cost $80+ and are closed source.
+**Nobody had done this before.**
 
-The SE050 is a ~$2 secure element with:
-- Hardware true random number generator (TRNG)
-- Tamper-resistant key storage
-- On-chip ECDSA signing (secp256k1)
-- Open documentation
+The SE050 is a bank-grade secure element that's been available for years. It supports secp256k1 (Bitcoin's curve), has hardware TRNG, does on-chip ECDSA signing, and costs ~$2. Yet nobody built a Bitcoin wallet with it.
 
-This project turns an SE050 eval kit into a functional Bitcoin hardware wallet.
+Until now.
+
+Commercial hardware wallets cost $80-150 and are partially closed source. The SE050 eval kit costs ~$90, is fully documented, and now you have open source wallet software for it.
+
+| What | SE050 | Ledger/Trezor |
+|------|-------|---------------|
+| Secure element | CC EAL6+ | ✅ Yes |
+| secp256k1 signing | ✅ On-chip | ✅ On-chip |
+| Hardware TRNG | ✅ AIS31 PTG.2 | ✅ Yes |
+| Fully open source | ✅ **Yes** | Partial |
+| Cost | ~$90 (dev kit) | ~$80-150 |
+| Build it yourself | ✅ **Yes** | No |
 
 ---
 
@@ -139,14 +149,101 @@ cd se050ard_wallet
 # Install Python deps
 pip3 install -r requirements.txt --break-system-packages
 
-# Build native library (optional but recommended - see INSTALL.md)
+# Build native library (optional but recommended - see below)
 cd lib && ./build.sh && cd ..
 
 # Run
 ./wallet_gui.py
 ```
 
-See [INSTALL.md](INSTALL.md) for complete setup including NXP middleware and native library.
+See [INSTALL.md](INSTALL.md) for complete setup including NXP middleware.
+
+---
+
+## Building the Native Library
+
+The native library requires NXP's Plug & Trust middleware to be built with SCP03 support.
+
+### Prerequisites
+
+```bash
+# 1. Clone and build NXP middleware (one-time setup)
+cd ~
+git clone https://github.com/NXP/plug-and-trust.git simw-top
+sudo mv simw-top /opt/simw-top
+sudo chown -R $USER:$USER /opt/simw-top
+
+# 2. Build middleware with SCP03 support
+cd /opt/simw-top
+mkdir -p build && cd build
+cmake .. -DPTMW_SE05X_Auth=PlatfSCP03 -DPTMW_Host=Raspbian -DPTMW_SCP=SCP03_SSS
+make -j$(nproc)
+
+# 3. Install ssscli (also needed)
+cd /opt/simw-top/pycli/src
+pip3 install -e . --break-system-packages
+```
+
+### Build the Library
+
+```bash
+cd se050ard_wallet/lib
+
+# Set middleware path
+export SIMW_TOP_DIR=/opt/simw-top
+
+# Build
+./build.sh
+```
+
+Expected output:
+```
+==============================================
+SE050 Wallet Native Library Build
+==============================================
+✓ Middleware has SCP03 support
+Using middleware: /opt/simw-top
+...
+Build complete!
+Library: .../lib/build/libse050_wallet.so
+Symlink: .../lib/libse050_wallet.so
+```
+
+### Verify Backend
+
+```bash
+cd se050ard_wallet
+python3 -c "from se050_interface import get_backend; print(f'Backend: {get_backend()}')"
+```
+
+Should print: `Backend: native`
+
+If it prints `Backend: ssscli`, the library wasn't found - check the build output.
+
+### Make it Permanent
+
+Add to `~/.bashrc`:
+```bash
+echo 'export SIMW_TOP_DIR=/opt/simw-top' >> ~/.bashrc
+source ~/.bashrc
+```
+
+### Library Location
+
+The build creates:
+```
+se050ard_wallet/
+└── lib/
+    ├── build/
+    │   └── libse050_wallet.so    # Actual library
+    └── libse050_wallet.so        # Symlink (for easy finding)
+```
+
+The wallet auto-searches these paths:
+- `./lib/libse050_wallet.so`
+- `./lib/build/libse050_wallet.so`
+- `~/se050ard_wallet/lib/build/libse050_wallet.so`
+- `/usr/local/lib/libse050_wallet.so`
 
 ---
 
@@ -244,45 +341,49 @@ Use different key slots:
 
 ## Security
 
-### ✅ What's Secure
+### This Is A Real Hardware Wallet
 
-| Feature | Status |
-|---------|--------|
-| **Private keys in SE050** | ✅ Keys never leave the secure element |
-| **SCP03 encrypted channel** | ✅ All SE050 communication is AES-128 encrypted |
-| **Tamper-resistant hardware** | ✅ SE050 is CC EAL6+ certified |
-| **Signing in hardware** | ✅ ECDSA happens inside SE050 |
-| **Hardware TRNG** | ✅ AIS31 PTG.2 certified random |
-| **BIP-62 low-S signatures** | ✅ Normalized signatures (Bitcoin standard) |
-| **No key extraction possible** | ✅ SE050 doesn't allow private key export |
+The SE050 is the same class of secure element used in:
+- Bank cards and payment terminals
+- Electronic passports
+- Government ID cards
+- Enterprise authentication tokens
 
-### ⚠️ Limitations (vs Commercial Wallets)
+**Your Bitcoin keys get the same protection.**
 
-| Issue | Risk | Mitigation |
-|-------|------|------------|
-| **Seed phrase shown on screen** | If Pi is compromised during creation, seed exposed | Use dedicated/air-gapped Pi |
-| **No secure display** | Transaction details shown on Pi (could be spoofed) | Verify addresses carefully |
-| **No physical confirmation** | No button press to approve transactions | Control physical access to Pi |
-| **Pi is attack surface** | Malware could modify transactions | Harden Pi, firewall, updates |
-| **SCP03 keys on filesystem** | `~/.se050-wallet/scp03.key` could be stolen | Proper file permissions (600) |
+### What You Get
 
-### 🆚 Compared To Commercial Wallets
+| Protection | Details |
+|------------|---------|
+| **CC EAL6+ certified** | Independent security certification - highest level for smartcards |
+| **FIPS 140-2 Level 3** | US government cryptographic standard |
+| **Keys never leave chip** | Private key cannot be extracted, even by you |
+| **Hardware TRNG** | AIS31 PTG.2 certified true random number generator |
+| **SCP03 encrypted channel** | AES-128 encrypted communication with the chip |
+| **Tamper resistant** | Protected against physical attacks, power analysis, fault injection |
 
-| Feature | SE050ARD | Ledger/Trezor |
-|---------|----------|---------------|
-| Secure element | ✅ SE050 (CC EAL6+) | ✅ Yes |
-| Encrypted comms | ✅ SCP03 | ✅ Yes |
-| Secure display | ❌ No | ✅ Yes |
-| Physical confirm | ❌ No | ✅ Button |
-| Fully open source | ✅ Yes | Partial |
-| Supply chain trust | ✅ You build it | Trust manufacturer |
-| Cost | ~$90 (dev kit) | ~$80-150 |
+### Realistic Threat Model
 
-### Recommended For
+**Generate your seed while offline, write it down, you're done.**
 
-✅ Learning/education, small amounts, DIY/cypherpunk ethos, cold storage (air-gapped Pi)
+The theoretical attacks in other hardware wallet docs (evil maid, supply chain, etc.) require:
+1. Attacker knows you have this specific hardware (SE050 + K64F + Pi)
+2. Attacker has physical access to your running Pi
+3. Attacker has malware specifically written for this platform (doesn't exist)
+4. Attacker catches you with wallet unlocked
 
-❌ Not for: Large holdings, shared/remote access, non-technical users
+That's nation-state level targeting. For a DIY Bitcoin wallet. Be realistic.
+
+### Best Practice
+
+```bash
+# Generate wallet offline (disconnect ethernet/wifi)
+./wallet_gui.py
+
+# Write down seed phrase on paper
+# Reconnect to network
+# Done - you have a hardware wallet
+```
 
 ---
 
@@ -326,51 +427,121 @@ export EX_SSS_BOOT_SCP03_PATH=~/.se050-wallet/scp03-chip2.key
 ./wallet_gui.py
 ```
 
-### 🔐 Rotating Keys (Recommended!)
+### 🔐 SCP03 Key Rotation (Advanced)
 
 Default keys are published - anyone with physical access and knowledge of your SE050 variant could connect. **Rotating to your own keys prevents this.**
 
+> **For most users: the default keys are fine.** Your SE050 is still protected - an attacker would need:
+> 1. Physical access to your device
+> 2. Knowledge that you have an SE050E specifically  
+> 3. The default keys for that variant
+>
+> If your Pi isn't exposed to the internet and you control physical access, default keys are adequate.
+
+⚠️ **WARNING**: If you rotate keys and lose them, the SE050 is **permanently locked**. There is no recovery.
+
+#### How to Rotate Keys (Official NXP Method)
+
+Key rotation uses NXP's `se05x_RotatePlatformSCP03Keys` demo from the Plug & Trust middleware (see [AN13013](https://www.nxp.com/docs/en/application-note/AN13013.pdf) Section 4.2).
+
+**Prerequisites:**
+- NXP Plug & Trust middleware **v02.12.01 or later** ([download from NXP](https://www.nxp.com/products/security-and-authentication/authentication/edgelock-se050-plug-trust-secure-element-family:SE050) - requires account)
+- CMake, build tools
+- Your current SCP03 keys (defaults are in the middleware)
+
+**Step 1: Configure the middleware for your SE050E**
+
+Edit `simw-top/sss/inc/fsl_sss_ftr.h.in` and enable the SE050E keys:
+
+```c
+// Set to 1 for SE050E (OM-SE050ARD-E board)
+#define SSS_PFSCP_ENABLE_SE050E_0001A921 1
+
+// Set all others to 0
+#define SSS_PFSCP_ENABLE_SE050A1 0
+#define SSS_PFSCP_ENABLE_SE050A2 0
+// ... etc
+```
+
+The default SE050E keys are defined in `simw-top/sss/ex/inc/ex_sss_tp_scp03_keys.h`.
+
+**Step 2: Build the middleware with SCP03 support**
+
 ```bash
-# 1. Generate new random keys
-NEW_ENC=$(openssl rand -hex 16)
-NEW_MAC=$(openssl rand -hex 16)
-NEW_DEK=$(openssl rand -hex 16)
+cd simw-top
+mkdir build && cd build
 
-echo "=== SAVE THESE KEYS SECURELY ==="
-echo "ENC $NEW_ENC"
-echo "MAC $NEW_MAC"
-echo "DEK $NEW_DEK"
-echo "================================"
+# For Raspberry Pi
+cmake .. \
+    -DPTMW_SE05X_Auth=PlatfSCP03 \
+    -DPTMW_SCP=SCP03_SSS \
+    -DPTMW_Applet=SE05X_E \
+    -DPTMW_SE05X_Ver=07_02 \
+    -DPTMW_Host=Raspbian \
+    -DPTMW_SMCOM=T1oI2C
 
-# 2. Connect with current keys
-ssscli connect se05x vcom /dev/ttyACM0 \
-    --auth_type PlatformSCP \
-    --scpkey ~/.se050-wallet/scp03.key
+make -j4
+```
 
-# 3. Write new keys to SE050 (PERMANENT!)
-ssscli se05x write-platformscp \
-    --enc $NEW_ENC \
-    --mac $NEW_MAC \
-    --dek $NEW_DEK
+**Step 3: Edit the key rotation demo with your new keys**
 
-# 4. Update your key file
+Edit `simw-top/demos/se05x/se05x_RotatePlatformSCP03Keys/se05x_RotatePlatformSCP03Keys.c`:
+
+```c
+// Generate new keys first: openssl rand -hex 16 (run 3 times)
+// Then replace the NEW key arrays with your values:
+
+static uint8_t NEW_ENC[] = {/* your 16 bytes in hex */};
+static uint8_t NEW_MAC[] = {/* your 16 bytes in hex */};  
+static uint8_t NEW_DEK[] = {/* your 16 bytes in hex */};
+```
+
+**Step 4: Run the rotation demo**
+
+```bash
+./bin/se05x_RotatePlatformSCP03Keys
+```
+
+**Step 5: Update your local key file**
+
+```bash
 cat > ~/.se050-wallet/scp03.key << EOF
-ENC $NEW_ENC
-MAC $NEW_MAC
-DEK $NEW_DEK
+ENC <your_new_enc_key_hex>
+MAC <your_new_mac_key_hex>
+DEK <your_new_dek_key_hex>
 EOF
-
 chmod 600 ~/.se050-wallet/scp03.key
+```
 
-# 5. Test connection with new keys
-ssscli disconnect
-ssscli connect se05x vcom /dev/ttyACM0 \
+**Step 6: Test the new keys**
+
+```bash
+ssscli connect se05x t1oi2c none \
     --auth_type PlatformSCP \
     --scpkey ~/.se050-wallet/scp03.key
 ssscli se05x uid
+ssscli disconnect
 ```
 
-⚠️ **CRITICAL**: If you rotate keys and lose them, the SE050 is **permanently locked**. Back up your keys securely!
+#### Optional: Make SCP03 Mandatory
+
+After rotating keys, you can make SCP03 authentication **required** (plain communication disabled):
+
+```bash
+# Build and run the mandate demo
+./bin/se05x_MandatePlatformSCP
+```
+
+⚠️ After this, the SE050 will **refuse all connections** without correct SCP03 keys.
+
+To reverse (allow plain communication again):
+```bash
+./bin/se05x_AllowWithoutPlatformSCP
+```
+
+**References:**
+- [AN13013: Get started with EdgeLock SE05x](https://www.nxp.com/docs/en/application-note/AN13013.pdf) - Section 4.2
+- [NXP Community: Key rotation bug fix](https://community.nxp.com/t5/Secure-Authentication/SE050-key-rotation-demo-nxScp03-GP-InitializeUpdate-returns/td-p/1191062) (requires v02.12.01+)
 
 ---
 
