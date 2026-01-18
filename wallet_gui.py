@@ -6,6 +6,16 @@ SE050ARD Hardware Bitcoin Wallet - GUI
 Tkinter GUI for the SE050 hardware wallet.
 Designed to work over VNC.
 
+Features:
+- Wallet creation with BIP39 seed phrase
+- Lazy mode: skip verification, copy seed to clipboard 🦥
+- Import existing seed phrases
+- Balance display with USD conversion
+- Send transactions with fee estimation
+- Message signing
+- Transaction history
+- SE050 verification
+
 Usage:
     ./wallet_gui.py
     ./wallet_gui.py --testnet
@@ -32,10 +42,18 @@ from wallet import (
     sign_message_with_se050, encode_signed_message,
     generate_qr_ascii, hash160, sha256, parse_amount,
     generate_mnemonic, validate_mnemonic, mnemonic_to_seed,
-    derive_bip84_key, compress_pubkey, derive_addresses,
-    build_rbf_transaction, build_cpfp_transaction,
-    BIP39_WORDLIST, get_verified_entropy, verify_entropy_quality
+    derive_bip84_key, compress_pubkey, derive_addresses
 )
+
+# Try to get backend info
+try:
+    from se050_interface import get_backend, is_native_available
+    SE050_BACKEND = get_backend()
+except ImportError:
+    SE050_BACKEND = "ssscli"
+    def is_native_available():
+        return False
+
 from datetime import datetime
 from pathlib import Path
 
@@ -46,61 +64,6 @@ try:
     HAS_QR = True
 except ImportError:
     HAS_QR = False
-
-
-def _secure_clear(data: bytes):
-    """
-    Attempt to securely clear sensitive data from memory.
-    
-    Note: Python doesn't guarantee memory clearing due to immutable bytes,
-    but this is a best-effort attempt. For bytearray, we can overwrite in place.
-    """
-    if isinstance(data, bytearray):
-        for i in range(len(data)):
-            data[i] = 0
-    elif isinstance(data, bytes):
-        # bytes are immutable, but we can try to overwrite via ctypes
-        try:
-            import ctypes
-            ctypes.memset(id(data) + 32, 0, len(data))  # CPython specific offset
-        except:
-            pass  # Best effort - let GC handle it
-    # Force garbage collection
-    import gc
-    gc.collect()
-
-
-def _generate_mnemonic_from_entropy(entropy: bytes) -> str:
-    """
-    Generate BIP39 mnemonic from provided entropy.
-    
-    Supported entropy lengths:
-    - 16 bytes (128 bits) → 12 words
-    - 20 bytes (160 bits) → 15 words
-    - 24 bytes (192 bits) → 18 words
-    - 28 bytes (224 bits) → 21 words
-    - 32 bytes (256 bits) → 24 words
-    """
-    import hashlib
-    
-    valid_lengths = {16: 12, 20: 15, 24: 18, 28: 21, 32: 24}  # bytes: words
-    
-    if len(entropy) not in valid_lengths:
-        raise ValueError(f"Entropy must be 16/20/24/28/32 bytes, got {len(entropy)}")
-    
-    strength = len(entropy) * 8  # bits
-    checksum_bits = strength // 32
-    
-    h = hashlib.sha256(entropy).digest()
-    b = bin(int.from_bytes(entropy, 'big'))[2:].zfill(strength)
-    b += bin(int.from_bytes(h, 'big'))[2:].zfill(256)[:checksum_bits]
-    
-    words = []
-    for i in range(0, len(b), 11):
-        idx = int(b[i:i+11], 2)
-        words.append(BIP39_WORDLIST[idx])
-    
-    return ' '.join(words)
 
 
 class WalletGUI:
@@ -119,7 +82,6 @@ class WalletGUI:
         self.monitoring = False
         self.monitor_interval = 30  # seconds
         self.last_balance = 0
-        self.tx_cache = {}  # Cache for transaction data (for RBF/CPFP)
         
         # Style
         self.style = ttk.Style()
@@ -364,43 +326,25 @@ class WalletGUI:
         tk.Label(header, text="Transaction History", font=('Segoe UI', 14, 'bold'),
                  fg='#fff', bg=self.bg_dark).pack(side=tk.LEFT)
         
-        # Button row
-        btn_row = tk.Frame(header, bg=self.bg_dark)
-        btn_row.pack(side=tk.RIGHT)
-        
-        refresh_btn = tk.Button(btn_row, text="↻ Refresh", font=('Segoe UI', 9),
+        refresh_btn = tk.Button(header, text="↻ Refresh", font=('Segoe UI', 9),
                                  bg=self.bg_mid, fg='#aaa', relief=tk.FLAT,
                                  padx=12, pady=4, command=self.refresh_history)
-        refresh_btn.pack(side=tk.LEFT, padx=(0, 5))
-        
-        # RBF button (for outgoing unconfirmed)
-        self.rbf_btn = tk.Button(btn_row, text="⚡ RBF Bump", font=('Segoe UI', 9),
-                                  bg='#e67e22', fg='#fff', relief=tk.FLAT,
-                                  padx=12, pady=4, command=self.show_rbf_dialog)
-        self.rbf_btn.pack(side=tk.LEFT, padx=(0, 5))
-        
-        # CPFP button (for incoming unconfirmed)
-        self.cpfp_btn = tk.Button(btn_row, text="🚀 CPFP", font=('Segoe UI', 9),
-                                   bg='#9b59b6', fg='#fff', relief=tk.FLAT,
-                                   padx=12, pady=4, command=self.show_cpfp_dialog)
-        self.cpfp_btn.pack(side=tk.LEFT)
+        refresh_btn.pack(side=tk.RIGHT)
         
         # Treeview container with rounded look
         tree_container = tk.Frame(content, bg=self.bg_mid, padx=2, pady=2)
         tree_container.pack(fill=tk.BOTH, expand=True)
         
-        columns = ('date', 'type', 'amount', 'status', 'txid')
+        columns = ('date', 'type', 'amount', 'txid')
         self.history_tree = ttk.Treeview(tree_container, columns=columns, show='headings', height=15)
         self.history_tree.heading('date', text='Date')
         self.history_tree.heading('type', text='Type')
         self.history_tree.heading('amount', text='Amount')
-        self.history_tree.heading('status', text='Status')
-        self.history_tree.heading('txid', text='Transaction ID')
-        self.history_tree.column('date', width=130, minwidth=110)
-        self.history_tree.column('type', width=60, minwidth=50)
-        self.history_tree.column('amount', width=110, minwidth=90)
-        self.history_tree.column('status', width=90, minwidth=70)
-        self.history_tree.column('txid', width=380, minwidth=200)
+        self.history_tree.heading('txid', text='Transaction ID (double-click to view)')
+        self.history_tree.column('date', width=140, minwidth=120)
+        self.history_tree.column('type', width=70, minwidth=60)
+        self.history_tree.column('amount', width=120, minwidth=100)
+        self.history_tree.column('txid', width=450, minwidth=200)
         
         # Scrollbars
         yscroll = ttk.Scrollbar(tree_container, orient=tk.VERTICAL, command=self.history_tree.yview)
@@ -417,17 +361,14 @@ class WalletGUI:
         # Events
         self.history_tree.bind('<Double-1>', self.open_tx_in_explorer)
         
-        # Right-click menu with RBF/CPFP options
+        # Right-click menu
         self.history_menu = tk.Menu(self.root, tearoff=0, bg=self.bg_mid, fg='#fff')
         self.history_menu.add_command(label="Copy TXID", command=self.copy_selected_txid)
         self.history_menu.add_command(label="View in Explorer", command=self.open_selected_tx)
-        self.history_menu.add_separator()
-        self.history_menu.add_command(label="⚡ RBF Bump Fee", command=self.show_rbf_dialog)
-        self.history_menu.add_command(label="🚀 CPFP Accelerate", command=self.show_cpfp_dialog)
         self.history_tree.bind('<Button-3>', self.show_history_menu)
         
         # Footer hint
-        tk.Label(content, text="Right-click for options · Double-click to open in browser · RBF=outgoing, CPFP=incoming",
+        tk.Label(content, text="Right-click for options · Double-click to open in browser",
                  font=('Segoe UI', 9), fg='#666', bg=self.bg_dark).pack(pady=(10, 0))
     
     def create_keys_tab(self):
@@ -541,6 +482,8 @@ class WalletGUI:
                     self.root.after(0, self.refresh_balance)
                     self.root.after(0, self.refresh_history)
                     self.root.after(0, self.refresh_se050_info)
+                    # Update status to show wallet is ready
+                    self.root.after(0, lambda: self.set_status(f"Wallet loaded (0x{Config.KEY_ID})", 'green'))
                 else:
                     self.root.after(0, lambda: self.set_status("No wallet found - init from Keys tab", 'orange'))
                     self.root.after(0, self.update_key_info)
@@ -763,32 +706,14 @@ class WalletGUI:
                     seen.add(tx['txid'])
                     unique.append(tx)
             
-            # Sort by time (unconfirmed first, then by block time)
-            unique.sort(key=lambda x: (
-                x.get('status', {}).get('confirmed', False),  # Unconfirmed first
-                -x.get('status', {}).get('block_time', 0)     # Then by time desc
-            ))
-            
-            # Store tx data for RBF/CPFP lookups
-            self.tx_cache = {}
+            # Sort by time
+            unique.sort(key=lambda x: x.get('status', {}).get('block_time', 0), reverse=True)
             
             for tx in unique[:50]:
                 status = tx.get('status', {})
                 block_time = status.get('block_time', 0)
                 confirmed = status.get('confirmed', False)
-                block_height = status.get('block_height', 0)
-                
-                # Date string
                 date_str = format_timestamp(block_time) if block_time else "⏳ Pending"
-                
-                # Confirmation status
-                if not confirmed:
-                    status_str = "⏳ Unconf"
-                elif block_height:
-                    # Could calculate confirmations here if we had current height
-                    status_str = "✓ Conf"
-                else:
-                    status_str = "✓ Conf"
                 
                 # Calculate net
                 total_in = sum(v.get('value', 0) for v in tx.get('vout', []) if v.get('scriptpubkey_address') in our_addresses)
@@ -796,26 +721,16 @@ class WalletGUI:
                 net = total_in - total_out
                 
                 if net > 0:
-                    tx_type = "⬇ IN"
+                    tx_type = "⬇ RECV"
                 elif net < 0:
-                    tx_type = "⬆ OUT"
+                    tx_type = "⬆ SEND"
                 else:
                     tx_type = "↔ SELF"
                 
                 txid = tx['txid']
                 
-                # Cache full tx data for RBF/CPFP
-                self.tx_cache[txid] = {
-                    'tx': tx,
-                    'confirmed': confirmed,
-                    'net': net,
-                    'is_incoming': net > 0,
-                    'is_outgoing': net < 0,
-                    'our_addresses': our_addresses
-                }
-                
-                self.root.after(0, lambda d=date_str, t=tx_type, a=net, s=status_str, tid=txid: 
-                    self.history_tree.insert('', tk.END, values=(d, t, f"{a:+,}", s, tid)))
+                self.root.after(0, lambda d=date_str, t=tx_type, a=net, tid=txid: 
+                    self.history_tree.insert('', tk.END, values=(d, t, f"{a:+,}", tid)))
             
             self.root.after(0, lambda: self.bottom_status.config(text=f"Loaded {len(unique)} transactions"))
         except Exception as e:
@@ -834,7 +749,7 @@ class WalletGUI:
         selection = self.history_tree.selection()
         if selection:
             item = self.history_tree.item(selection[0])
-            return item['values'][4]  # txid is 5th column now (date, type, amount, status, txid)
+            return item['values'][3]  # txid is 4th column
         return None
     
     def copy_selected_txid(self):
@@ -864,56 +779,6 @@ class WalletGUI:
         url = f"https://{explorer}/tx/{txid}"
         webbrowser.open(url)
         self.bottom_status.config(text=f"Opened {txid[:16]}... in browser")
-    
-    def show_rbf_dialog(self):
-        """Show RBF (Replace-By-Fee) dialog for bumping fee on outgoing unconfirmed tx"""
-        txid = self.get_selected_txid()
-        if not txid:
-            messagebox.showwarning("RBF", "Select an unconfirmed transaction first")
-            return
-        
-        if not hasattr(self, 'tx_cache') or txid not in self.tx_cache:
-            messagebox.showerror("Error", "Transaction data not loaded. Refresh history first.")
-            return
-        
-        tx_info = self.tx_cache[txid]
-        
-        if tx_info['confirmed']:
-            messagebox.showwarning("RBF", "This transaction is already confirmed.\nRBF only works on unconfirmed transactions.")
-            return
-        
-        if tx_info['is_incoming']:
-            messagebox.showwarning("RBF", "RBF is for outgoing transactions.\nUse CPFP for incoming transactions.")
-            return
-        
-        # Check if tx signals RBF (sequence < 0xfffffffe)
-        tx = tx_info['tx']
-        rbf_enabled = any(vin.get('sequence', 0xffffffff) < 0xfffffffe for vin in tx.get('vin', []))
-        
-        if not rbf_enabled:
-            messagebox.showwarning("RBF", "This transaction did not signal RBF.\n(sequence numbers are final)\n\nYou can try CPFP instead.")
-            return
-        
-        RBFDialog(self.root, self, txid, tx_info)
-    
-    def show_cpfp_dialog(self):
-        """Show CPFP (Child-Pays-For-Parent) dialog for accelerating unconfirmed tx"""
-        txid = self.get_selected_txid()
-        if not txid:
-            messagebox.showwarning("CPFP", "Select an unconfirmed transaction first")
-            return
-        
-        if not hasattr(self, 'tx_cache') or txid not in self.tx_cache:
-            messagebox.showerror("Error", "Transaction data not loaded. Refresh history first.")
-            return
-        
-        tx_info = self.tx_cache[txid]
-        
-        if tx_info['confirmed']:
-            messagebox.showwarning("CPFP", "This transaction is already confirmed.\nCPFP only works on unconfirmed transactions.")
-            return
-        
-        CPFPDialog(self.root, self, txid, tx_info)
     
     # Keys tab methods
     def update_key_info(self):
@@ -984,31 +849,18 @@ class WalletGUI:
             self.update_wallet_display()
             self.update_key_info()
             self.refresh_balance()
-            self.refresh_history()  # Auto-refresh transaction history
             self.bottom_status.config(text=f"Loaded key slot 0x{new_keyid}")
         else:
             self.segwit_var.set("---")
             self.legacy_var.set("---")
             self.balance_label.config(text="--- sats")
-            # Clear history when no wallet
-            self.history_tree.delete(*self.history_tree.get_children())
             self.update_key_info()
             self.bottom_status.config(text=f"No wallet at slot 0x{new_keyid}")
     
     def check_key_slot(self):
         """Check if key exists in SE050"""
         keyid = self.keyid_var.get().strip()
-        self.bottom_status.config(text="Checking key slot...")
-        
-        def _check():
-            exists = se050_key_exists(keyid)
-            self.root.after(0, lambda: self._show_key_check_result(keyid, exists))
-        
-        threading.Thread(target=_check, daemon=True).start()
-    
-    def _show_key_check_result(self, keyid, exists):
-        self.bottom_status.config(text="")
-        if exists:
+        if se050_key_exists(keyid):
             messagebox.showinfo("Key Check", f"Key 0x{keyid} EXISTS in SE050")
         else:
             messagebox.showinfo("Key Check", f"Key 0x{keyid} NOT FOUND in SE050")
@@ -1016,37 +868,23 @@ class WalletGUI:
     def show_create_wallet_dialog(self):
         """Show dialog to create new wallet with seed phrase"""
         keyid = self.keyid_var.get().strip()
-        self.bottom_status.config(text="Checking key slot...")
 
-        def _check_and_show():
-            exists = se050_key_exists(keyid)
-            self.root.after(0, lambda: self._show_create_dialog_after_check(keyid, exists))
-        
-        threading.Thread(target=_check_and_show, daemon=True).start()
-    
-    def _show_create_dialog_after_check(self, keyid, exists):
-        self.bottom_status.config(text="")
-        if exists:
+        # Check if key already exists
+        if se050_key_exists(keyid):
             if not messagebox.askyesno("Warning", f"Key 0x{keyid} already exists!\n\nThis will REPLACE the existing key.\n\nContinue?"):
                 return
+
         CreateWalletDialog(self.root, self, keyid)
 
     def show_import_wallet_dialog(self):
         """Show dialog to import wallet from seed phrase"""
         keyid = self.keyid_var.get().strip()
-        self.bottom_status.config(text="Checking key slot...")
 
-        def _check_and_show():
-            exists = se050_key_exists(keyid)
-            self.root.after(0, lambda: self._show_import_dialog_after_check(keyid, exists))
-        
-        threading.Thread(target=_check_and_show, daemon=True).start()
-    
-    def _show_import_dialog_after_check(self, keyid, exists):
-        self.bottom_status.config(text="")
-        if exists:
+        # Check if key already exists
+        if se050_key_exists(keyid):
             if not messagebox.askyesno("Warning", f"Key 0x{keyid} already exists!\n\nImporting will REPLACE the existing key.\n\nContinue?"):
                 return
+
         ImportWalletDialog(self.root, self, keyid)
 
     def finalize_wallet_from_seed(self, mnemonic: str, keyid: str):
@@ -1057,9 +895,6 @@ class WalletGUI:
 
     def _finalize_wallet_from_seed(self, mnemonic: str):
         """Background: derive key from seed and write to SE050"""
-        seed = None
-        private_key = None
-        
         try:
             # Convert mnemonic to seed
             seed = mnemonic_to_seed(mnemonic)
@@ -1098,6 +933,7 @@ class WalletGUI:
                 self.root.after(0, self.update_wallet_display)
                 self.root.after(0, self.update_key_info)
                 self.root.after(0, self.refresh_balance)
+                self.root.after(0, lambda: self.set_status(f"Wallet loaded (0x{Config.KEY_ID})", 'green'))
                 self.root.after(0, lambda: self.bottom_status.config(text="Wallet created successfully!"))
                 self.root.after(0, lambda: messagebox.showinfo("Success",
                     f"Wallet created!\n\n"
@@ -1110,12 +946,6 @@ class WalletGUI:
         except Exception as e:
             err_msg = str(e)
             self.root.after(0, lambda: messagebox.showerror("Error", f"Wallet creation failed: {err_msg}"))
-        finally:
-            # Secure cleanup - overwrite sensitive data in memory
-            if seed is not None:
-                _secure_clear(seed)
-            if private_key is not None:
-                _secure_clear(private_key)
     
     def export_pubkey(self):
         """Export public key info"""
@@ -1173,38 +1003,22 @@ class WalletGUI:
             return
         
         try:
-            self.bottom_status.config(text="Wiping key from SE050...")
+            se050_delete_key(keyid)
             
-            def _do_wipe():
-                try:
-                    se050_delete_key(keyid)
-                    
-                    # Delete local files
-                    for path in [Config.pubkey_der_path(), Config.pubkey_pem_path(), Config.wallet_info_path()]:
-                        if path.exists():
-                            path.unlink()
-                    
-                    self.root.after(0, self._wipe_success, keyid)
-                except Exception as e:
-                    err_msg = str(e)
-                    self.root.after(0, lambda: self._wipe_error(err_msg))
+            # Delete local files
+            for path in [Config.pubkey_der_path(), Config.pubkey_pem_path(), Config.wallet_info_path()]:
+                if path.exists():
+                    path.unlink()
             
-            threading.Thread(target=_do_wipe, daemon=True).start()
+            self.wallet = Wallet()
+            self.segwit_var.set("---")
+            self.legacy_var.set("---")
+            self.balance_label.config(text="--- sats")
+            self.update_key_info()
+            
+            messagebox.showinfo("Wiped", f"Key 0x{keyid} has been wiped")
         except Exception as e:
             messagebox.showerror("Error", f"Wipe failed: {e}")
-    
-    def _wipe_success(self, keyid):
-        self.wallet = Wallet()
-        self.segwit_var.set("---")
-        self.legacy_var.set("---")
-        self.balance_label.config(text="--- sats")
-        self.update_key_info()
-        self.bottom_status.config(text="")
-        messagebox.showinfo("Wiped", f"Key 0x{keyid} has been wiped")
-    
-    def _wipe_error(self, err_msg):
-        self.bottom_status.config(text="")
-        messagebox.showerror("Error", f"Wipe failed: {err_msg}")
     
     def show_send_dialog(self):
         """Show send transaction dialog"""
@@ -1412,47 +1226,48 @@ class SendDialog:
                             command=self.set_max_amount)
         max_btn.pack(side=tk.LEFT, padx=(10, 0))
         
-        # Fee section - use defaults, fetch live rates in background
-        self.fee_estimates = {'hourFee': 5, 'halfHourFee': 10, 'fastestFee': 20}  # Defaults
-        self.content = content  # Store reference for async update
-        self.fee_row = None  # Will hold fee buttons for updating
+        # Fee section - fetch live rates
+        self.fee_estimates = get_fee_estimates()
         
         fee_section = tk.Frame(content, bg=self.bg)
         fee_section.pack(fill=tk.X, pady=(0, 15))
         
-        fee_label_row = tk.Frame(fee_section, bg=self.bg)
-        fee_label_row.pack(fill=tk.X)
+        tk.Label(fee_section, text="Network Fee", font=('Segoe UI', 10),
+                 fg=self.fg_dim, bg=self.bg).pack(anchor=tk.W)
         
-        tk.Label(fee_label_row, text="Network Fee", font=('Segoe UI', 10),
-                 fg=self.fg_dim, bg=self.bg).pack(side=tk.LEFT)
-        
-        self.fee_loading_label = tk.Label(fee_label_row, text="(loading...)", 
-                                          font=('Segoe UI', 9), fg='#666', bg=self.bg)
-        self.fee_loading_label.pack(side=tk.LEFT, padx=(5, 0))
-        
-        self.fee_row = tk.Frame(fee_section, bg=self.bg)
-        self.fee_row.pack(fill=tk.X, pady=(5, 0))
+        fee_row = tk.Frame(fee_section, bg=self.bg)
+        fee_row.pack(fill=tk.X, pady=(5, 0))
         
         # Priority buttons
         self.fee_var = tk.StringVar(value=str(self.fee_estimates.get('halfHourFee', 10)))
         self.fee_priority = tk.StringVar(value="medium")
         
-        self._create_fee_buttons()
+        priorities = [
+            ("🐢 Slow", "slow", self.fee_estimates.get('hourFee', 5), '#666'),
+            ("⚡ Medium", "medium", self.fee_estimates.get('halfHourFee', 10), '#f39c12'),
+            ("🚀 Fast", "fast", self.fee_estimates.get('fastestFee', 20), '#27ae60'),
+        ]
         
-        # Fetch live rates in background
-        threading.Thread(target=self._fetch_fee_estimates, daemon=True).start()
+        for label, priority, rate, color in priorities:
+            btn = tk.Button(fee_row, text=f"{label}\n{rate} sat/vB", 
+                           font=('Segoe UI', 9), bg=self.bg_card, fg=self.fg,
+                           relief=tk.FLAT, padx=12, pady=6, width=10,
+                           command=lambda r=rate, p=priority: self.set_fee_priority(r, p))
+            btn.pack(side=tk.LEFT, padx=(0, 8))
+            # Store reference for highlighting
+            setattr(self, f'fee_btn_{priority}', btn)
         
         # Custom fee entry
-        tk.Label(self.fee_row, text="or", font=('Segoe UI', 9), 
+        tk.Label(fee_row, text="or", font=('Segoe UI', 9), 
                  fg=self.fg_dim, bg=self.bg).pack(side=tk.LEFT, padx=(5, 5))
         
-        fee_entry = tk.Entry(self.fee_row, textvariable=self.fee_var, font=('Consolas', 11),
+        fee_entry = tk.Entry(fee_row, textvariable=self.fee_var, font=('Consolas', 11),
                              bg=self.bg_input, fg=self.fg, relief=tk.FLAT, width=5,
                              insertbackground='#fff')
         fee_entry.pack(side=tk.LEFT, ipady=6)
         fee_entry.bind('<KeyRelease>', lambda e: self.on_custom_fee())
         
-        tk.Label(self.fee_row, text="sat/vB", font=('Segoe UI', 9), 
+        tk.Label(fee_row, text="sat/vB", font=('Segoe UI', 9), 
                  fg=self.fg_dim, bg=self.bg).pack(side=tk.LEFT, padx=(5, 0))
         
         # Highlight default (medium)
@@ -1504,61 +1319,6 @@ class SendDialog:
         self.highlight_fee_button("custom")
         self.update_calculation()
     
-    def _create_fee_buttons(self):
-        """Create or recreate fee priority buttons"""
-        # Remove old fee buttons if they exist
-        for priority in ['slow', 'medium', 'fast']:
-            btn = getattr(self, f'fee_btn_{priority}', None)
-            if btn:
-                btn.destroy()
-        
-        priorities = [
-            ("🐢 Slow", "slow", self.fee_estimates.get('hourFee', 5)),
-            ("⚡ Medium", "medium", self.fee_estimates.get('halfHourFee', 10)),
-            ("🚀 Fast", "fast", self.fee_estimates.get('fastestFee', 20)),
-        ]
-        
-        # Get list of current children to insert before
-        children = self.fee_row.winfo_children()
-        insert_before = children[0] if children else None
-        
-        # Create buttons (in reverse order since we're inserting at beginning)
-        for label, priority, rate in reversed(priorities):
-            btn = tk.Button(self.fee_row, text=f"{label}\n{rate} sat/vB", 
-                           font=('Segoe UI', 9), bg=self.bg_card, fg=self.fg,
-                           relief=tk.FLAT, padx=12, pady=6, width=10,
-                           command=lambda r=rate, p=priority: self.set_fee_priority(r, p))
-            if insert_before:
-                btn.pack(side=tk.LEFT, padx=(0, 8), before=insert_before)
-            else:
-                btn.pack(side=tk.LEFT, padx=(0, 8))
-            insert_before = btn
-            setattr(self, f'fee_btn_{priority}', btn)
-        
-        self.highlight_fee_button(self.fee_priority.get())
-    
-    def _fetch_fee_estimates(self):
-        """Fetch fee estimates in background"""
-        try:
-            estimates = get_fee_estimates()
-            if estimates:
-                self.fee_estimates = estimates
-                self.top.after(0, self._update_fee_display)
-        except:
-            pass  # Keep defaults on error
-    
-    def _update_fee_display(self):
-        """Update fee buttons with live data"""
-        self.fee_loading_label.config(text="")
-        
-        # Update the fee variable to new medium rate if still on default
-        if self.fee_priority.get() == "medium":
-            self.fee_var.set(str(self.fee_estimates.get('halfHourFee', 10)))
-        
-        # Recreate buttons with new rates
-        self._create_fee_buttons()
-        self.update_calculation()
-    
     def highlight_fee_button(self, active_priority):
         """Highlight the active fee priority button"""
         colors = {
@@ -1577,32 +1337,10 @@ class SendDialog:
                     btn.config(bg=self.bg_card, fg=self.fg)
     
     def get_price(self, currency):
-        """Get cached price or return None (fetch happens async)"""
+        """Get cached price or fetch new one"""
         if currency not in self.cached_prices:
-            # Start async fetch if not already fetching
-            if not hasattr(self, '_fetching_prices'):
-                self._fetching_prices = set()
-            
-            if currency not in self._fetching_prices:
-                self._fetching_prices.add(currency)
-                threading.Thread(target=lambda: self._fetch_price(currency), daemon=True).start()
-            
-            return None  # Return None while fetching
+            self.cached_prices[currency] = get_btc_price(currency)
         return self.cached_prices[currency]
-    
-    def _fetch_price(self, currency):
-        """Fetch price in background"""
-        try:
-            price = get_btc_price(currency)
-            if price:
-                self.cached_prices[currency] = price
-                # Update calculation on main thread
-                self.top.after(0, self.update_calculation)
-        except:
-            pass
-        finally:
-            if hasattr(self, '_fetching_prices'):
-                self._fetching_prices.discard(currency)
     
     def sats_to_unit(self, sats, unit):
         """Convert sats to display unit"""
@@ -1871,475 +1609,6 @@ class SendDialog:
         self.gui.refresh_balance()
 
 
-class RBFDialog:
-    """RBF (Replace-By-Fee) dialog for bumping transaction fees"""
-    
-    def __init__(self, parent, gui, txid, tx_info):
-        self.gui = gui
-        self.txid = txid
-        self.tx_info = tx_info
-        self.tx = tx_info['tx']
-        
-        # Colors
-        self.bg = '#0f0f1a'
-        self.bg_card = '#1a1a2e'
-        self.bg_input = '#252540'
-        self.fg = '#e8e8e8'
-        self.fg_dim = '#888'
-        self.accent = '#e67e22'
-        
-        self.top = tk.Toplevel(parent)
-        self.top.title("RBF - Bump Transaction Fee")
-        self.top.geometry("550x480")
-        self.top.configure(bg=self.bg)
-        self.top.transient(parent)
-        self.top.grab_set()
-        
-        self.create_ui()
-        self.load_tx_details()
-    
-    def create_ui(self):
-        content = tk.Frame(self.top, bg=self.bg, padx=25, pady=20)
-        content.pack(fill=tk.BOTH, expand=True)
-        
-        # Header
-        tk.Label(content, text="⚡ REPLACE-BY-FEE (RBF)", font=('Segoe UI', 16, 'bold'),
-                 fg=self.accent, bg=self.bg).pack(anchor=tk.W, pady=(0, 5))
-        tk.Label(content, text="Bump the fee on your unconfirmed transaction",
-                 font=('Segoe UI', 10), fg=self.fg_dim, bg=self.bg).pack(anchor=tk.W, pady=(0, 15))
-        
-        # TX info card
-        info_card = tk.Frame(content, bg=self.bg_card, padx=15, pady=12)
-        info_card.pack(fill=tk.X, pady=(0, 15))
-        
-        tk.Label(info_card, text="Original Transaction", font=('Segoe UI', 10, 'bold'),
-                 fg=self.fg, bg=self.bg_card).pack(anchor=tk.W)
-        
-        self.txid_label = tk.Label(info_card, text=f"TXID: {self.txid[:32]}...",
-                                    font=('Consolas', 9), fg=self.fg_dim, bg=self.bg_card)
-        self.txid_label.pack(anchor=tk.W, pady=(5, 0))
-        
-        self.original_fee_label = tk.Label(info_card, text="Original fee: calculating...",
-                                            font=('Segoe UI', 10), fg=self.fg, bg=self.bg_card)
-        self.original_fee_label.pack(anchor=tk.W, pady=(5, 0))
-        
-        self.fee_rate_label = tk.Label(info_card, text="Fee rate: calculating...",
-                                        font=('Segoe UI', 10), fg=self.fg, bg=self.bg_card)
-        self.fee_rate_label.pack(anchor=tk.W)
-        
-        # New fee input
-        fee_frame = tk.Frame(content, bg=self.bg)
-        fee_frame.pack(fill=tk.X, pady=(10, 5))
-        
-        tk.Label(fee_frame, text="New fee rate (sat/vB):", font=('Segoe UI', 10),
-                 fg=self.fg, bg=self.bg).pack(anchor=tk.W)
-        
-        input_row = tk.Frame(fee_frame, bg=self.bg)
-        input_row.pack(fill=tk.X, pady=(5, 0))
-        
-        self.new_fee_var = tk.StringVar(value="20")
-        self.new_fee_entry = tk.Entry(input_row, textvariable=self.new_fee_var,
-                                       font=('Consolas', 12), bg=self.bg_input, fg=self.fg,
-                                       relief=tk.FLAT, width=10, insertbackground='#fff')
-        self.new_fee_entry.pack(side=tk.LEFT, ipady=8, padx=(0, 10))
-        
-        # Fee presets
-        for rate, label in [(10, "Low"), (20, "Med"), (50, "High"), (100, "Urgent")]:
-            tk.Button(input_row, text=label, font=('Segoe UI', 9),
-                      bg=self.bg_card, fg=self.fg_dim, relief=tk.FLAT, padx=10, pady=4,
-                      command=lambda r=rate: self.new_fee_var.set(str(r))).pack(side=tk.LEFT, padx=2)
-        
-        # Estimated new fee
-        self.new_fee_estimate = tk.Label(content, text="New total fee: --",
-                                          font=('Segoe UI', 10), fg=self.accent, bg=self.bg)
-        self.new_fee_estimate.pack(anchor=tk.W, pady=(10, 0))
-        
-        self.new_fee_var.trace('w', lambda *args: self.update_fee_estimate())
-        
-        # Warning
-        warning_frame = tk.Frame(content, bg='#3d2814', padx=12, pady=10)
-        warning_frame.pack(fill=tk.X, pady=(15, 0))
-        tk.Label(warning_frame, text="⚠️ RBF replaces your original transaction with a new one.",
-                 font=('Segoe UI', 9), fg='#f39c12', bg='#3d2814', wraplength=480).pack(anchor=tk.W)
-        tk.Label(warning_frame, text="The original TXID will become invalid.",
-                 font=('Segoe UI', 9), fg='#f39c12', bg='#3d2814').pack(anchor=tk.W)
-        
-        # Status
-        self.status_label = tk.Label(content, text="", font=('Segoe UI', 10),
-                                      fg=self.fg_dim, bg=self.bg)
-        self.status_label.pack(anchor=tk.W, pady=(15, 0))
-        
-        # Buttons
-        btn_frame = tk.Frame(content, bg=self.bg)
-        btn_frame.pack(fill=tk.X, pady=(20, 0))
-        
-        self.bump_btn = tk.Button(btn_frame, text="⚡ Bump Fee", font=('Segoe UI', 11, 'bold'),
-                                   bg=self.accent, fg='#fff', relief=tk.FLAT, padx=20, pady=10,
-                                   command=self.do_rbf)
-        self.bump_btn.pack(side=tk.LEFT, padx=(0, 10))
-        
-        tk.Button(btn_frame, text="Cancel", font=('Segoe UI', 10),
-                  bg=self.bg_card, fg=self.fg_dim, relief=tk.FLAT, padx=15, pady=10,
-                  command=self.top.destroy).pack(side=tk.LEFT)
-    
-    def load_tx_details(self):
-        """Load transaction details to calculate current fee"""
-        threading.Thread(target=self._load_tx_details, daemon=True).start()
-    
-    def _load_tx_details(self):
-        try:
-            tx = self.tx
-            
-            # Calculate input value
-            total_input = 0
-            for vin in tx.get('vin', []):
-                prevout = vin.get('prevout', {})
-                total_input += prevout.get('value', 0)
-            
-            # Calculate output value
-            total_output = sum(vout.get('value', 0) for vout in tx.get('vout', []))
-            
-            # Fee
-            self.original_fee = total_input - total_output
-            
-            # Estimate vsize (weight / 4)
-            self.tx_vsize = tx.get('weight', 0) // 4 or 200  # fallback estimate
-            
-            self.original_fee_rate = self.original_fee / self.tx_vsize if self.tx_vsize else 0
-            
-            self.top.after(0, self._update_display)
-        except Exception as e:
-            self.top.after(0, lambda: self.status_label.config(text=f"Error: {e}", fg='#e74c3c'))
-    
-    def _update_display(self):
-        self.original_fee_label.config(text=f"Original fee: {self.original_fee:,} sats")
-        self.fee_rate_label.config(text=f"Fee rate: {self.original_fee_rate:.1f} sat/vB ({self.tx_vsize} vB)")
-        
-        # Set suggested new fee rate (at least 1 sat/vB higher)
-        suggested = max(int(self.original_fee_rate) + 5, 10)
-        self.new_fee_var.set(str(suggested))
-        self.update_fee_estimate()
-    
-    def update_fee_estimate(self):
-        try:
-            new_rate = int(self.new_fee_var.get())
-            if hasattr(self, 'tx_vsize'):
-                new_fee = new_rate * self.tx_vsize
-                diff = new_fee - getattr(self, 'original_fee', 0)
-                self.new_fee_estimate.config(text=f"New total fee: {new_fee:,} sats (+{diff:,})")
-        except:
-            self.new_fee_estimate.config(text="New total fee: --")
-    
-    def do_rbf(self):
-        """Execute RBF transaction"""
-        try:
-            new_rate = int(self.new_fee_var.get())
-        except:
-            messagebox.showerror("Error", "Invalid fee rate")
-            return
-        
-        if hasattr(self, 'original_fee_rate') and new_rate <= self.original_fee_rate:
-            messagebox.showerror("Error", f"New fee rate must be higher than {self.original_fee_rate:.1f} sat/vB")
-            return
-        
-        self.status_label.config(text="Building replacement transaction...", fg=self.fg_dim)
-        self.bump_btn.config(state='disabled')
-        
-        threading.Thread(target=lambda: self._do_rbf(new_rate), daemon=True).start()
-    
-    def _do_rbf(self, new_fee_rate):
-        """Background: build and broadcast RBF transaction"""
-        try:
-            from wallet import build_rbf_transaction, api_post
-            
-            # Build RBF transaction
-            raw_tx, new_txid = build_rbf_transaction(
-                self.tx,
-                new_fee_rate,
-                self.gui.wallet,
-                Config.KEY_ID
-            )
-            
-            # Broadcast
-            result = api_post('/tx', raw_tx.encode())
-            
-            if result:
-                self.top.after(0, lambda: self._rbf_success(result))
-            else:
-                self.top.after(0, lambda: self._rbf_error("Broadcast failed"))
-                
-        except Exception as e:
-            err_msg = str(e)
-            self.top.after(0, lambda: self._rbf_error(err_msg))
-    
-    def _rbf_success(self, new_txid):
-        explorer = "mempool.space/testnet4" if Config.NETWORK == "testnet" else "mempool.space"
-        messagebox.showinfo("RBF Success!", 
-            f"Fee bumped successfully!\n\nNew TXID:\n{new_txid}\n\nhttps://{explorer}/tx/{new_txid}")
-        self.top.destroy()
-        self.gui.refresh_balance()
-        self.gui.refresh_history()
-    
-    def _rbf_error(self, error):
-        self.status_label.config(text=f"Error: {error}", fg='#e74c3c')
-        self.bump_btn.config(state='normal')
-
-
-class CPFPDialog:
-    """CPFP (Child-Pays-For-Parent) dialog for accelerating transactions"""
-    
-    def __init__(self, parent, gui, txid, tx_info):
-        self.gui = gui
-        self.txid = txid
-        self.tx_info = tx_info
-        self.tx = tx_info['tx']
-        
-        # Colors
-        self.bg = '#0f0f1a'
-        self.bg_card = '#1a1a2e'
-        self.bg_input = '#252540'
-        self.fg = '#e8e8e8'
-        self.fg_dim = '#888'
-        self.accent = '#9b59b6'
-        
-        self.top = tk.Toplevel(parent)
-        self.top.title("CPFP - Accelerate Transaction")
-        self.top.geometry("550x520")
-        self.top.configure(bg=self.bg)
-        self.top.transient(parent)
-        self.top.grab_set()
-        
-        self.spendable_outputs = []
-        
-        self.create_ui()
-        self.load_tx_details()
-    
-    def create_ui(self):
-        content = tk.Frame(self.top, bg=self.bg, padx=25, pady=20)
-        content.pack(fill=tk.BOTH, expand=True)
-        
-        # Header
-        tk.Label(content, text="🚀 CHILD-PAYS-FOR-PARENT (CPFP)", font=('Segoe UI', 16, 'bold'),
-                 fg=self.accent, bg=self.bg).pack(anchor=tk.W, pady=(0, 5))
-        tk.Label(content, text="Spend an output to create a high-fee child transaction",
-                 font=('Segoe UI', 10), fg=self.fg_dim, bg=self.bg).pack(anchor=tk.W, pady=(0, 15))
-        
-        # TX info card
-        info_card = tk.Frame(content, bg=self.bg_card, padx=15, pady=12)
-        info_card.pack(fill=tk.X, pady=(0, 15))
-        
-        tk.Label(info_card, text="Parent Transaction", font=('Segoe UI', 10, 'bold'),
-                 fg=self.fg, bg=self.bg_card).pack(anchor=tk.W)
-        
-        self.txid_label = tk.Label(info_card, text=f"TXID: {self.txid[:32]}...",
-                                    font=('Consolas', 9), fg=self.fg_dim, bg=self.bg_card)
-        self.txid_label.pack(anchor=tk.W, pady=(5, 0))
-        
-        self.parent_fee_label = tk.Label(info_card, text="Parent fee: calculating...",
-                                          font=('Segoe UI', 10), fg=self.fg, bg=self.bg_card)
-        self.parent_fee_label.pack(anchor=tk.W, pady=(5, 0))
-        
-        self.spendable_label = tk.Label(info_card, text="Spendable outputs: scanning...",
-                                         font=('Segoe UI', 10), fg=self.fg, bg=self.bg_card)
-        self.spendable_label.pack(anchor=tk.W)
-        
-        # Target fee rate
-        fee_frame = tk.Frame(content, bg=self.bg)
-        fee_frame.pack(fill=tk.X, pady=(10, 5))
-        
-        tk.Label(fee_frame, text="Target package fee rate (sat/vB):", font=('Segoe UI', 10),
-                 fg=self.fg, bg=self.bg).pack(anchor=tk.W)
-        tk.Label(fee_frame, text="(This is the effective rate for parent + child combined)",
-                 font=('Segoe UI', 9), fg=self.fg_dim, bg=self.bg).pack(anchor=tk.W)
-        
-        input_row = tk.Frame(fee_frame, bg=self.bg)
-        input_row.pack(fill=tk.X, pady=(5, 0))
-        
-        self.target_fee_var = tk.StringVar(value="30")
-        self.target_fee_entry = tk.Entry(input_row, textvariable=self.target_fee_var,
-                                          font=('Consolas', 12), bg=self.bg_input, fg=self.fg,
-                                          relief=tk.FLAT, width=10, insertbackground='#fff')
-        self.target_fee_entry.pack(side=tk.LEFT, ipady=8, padx=(0, 10))
-        
-        for rate, label in [(20, "Med"), (50, "High"), (100, "Urgent"), (200, "Max")]:
-            tk.Button(input_row, text=label, font=('Segoe UI', 9),
-                      bg=self.bg_card, fg=self.fg_dim, relief=tk.FLAT, padx=10, pady=4,
-                      command=lambda r=rate: self.target_fee_var.set(str(r))).pack(side=tk.LEFT, padx=2)
-        
-        # Fee calculation display
-        self.calc_frame = tk.Frame(content, bg=self.bg_card, padx=15, pady=12)
-        self.calc_frame.pack(fill=tk.X, pady=(15, 0))
-        
-        self.child_fee_label = tk.Label(self.calc_frame, text="Child tx fee needed: calculating...",
-                                         font=('Segoe UI', 10), fg=self.accent, bg=self.bg_card)
-        self.child_fee_label.pack(anchor=tk.W)
-        
-        self.remaining_label = tk.Label(self.calc_frame, text="You will receive back: --",
-                                         font=('Segoe UI', 10), fg=self.fg, bg=self.bg_card)
-        self.remaining_label.pack(anchor=tk.W, pady=(5, 0))
-        
-        self.target_fee_var.trace('w', lambda *args: self.update_calculation())
-        
-        # Info
-        info_frame = tk.Frame(content, bg='#1a2a3a', padx=12, pady=10)
-        info_frame.pack(fill=tk.X, pady=(15, 0))
-        tk.Label(info_frame, text="ℹ️ CPFP works by spending an output from the stuck transaction.",
-                 font=('Segoe UI', 9), fg='#3498db', bg='#1a2a3a', wraplength=480).pack(anchor=tk.W)
-        tk.Label(info_frame, text="Miners will mine both transactions together to collect the child's fee.",
-                 font=('Segoe UI', 9), fg='#3498db', bg='#1a2a3a', wraplength=480).pack(anchor=tk.W)
-        
-        # Status
-        self.status_label = tk.Label(content, text="", font=('Segoe UI', 10),
-                                      fg=self.fg_dim, bg=self.bg)
-        self.status_label.pack(anchor=tk.W, pady=(15, 0))
-        
-        # Buttons
-        btn_frame = tk.Frame(content, bg=self.bg)
-        btn_frame.pack(fill=tk.X, pady=(15, 0))
-        
-        self.cpfp_btn = tk.Button(btn_frame, text="🚀 Accelerate", font=('Segoe UI', 11, 'bold'),
-                                   bg=self.accent, fg='#fff', relief=tk.FLAT, padx=20, pady=10,
-                                   command=self.do_cpfp, state='disabled')
-        self.cpfp_btn.pack(side=tk.LEFT, padx=(0, 10))
-        
-        tk.Button(btn_frame, text="Cancel", font=('Segoe UI', 10),
-                  bg=self.bg_card, fg=self.fg_dim, relief=tk.FLAT, padx=15, pady=10,
-                  command=self.top.destroy).pack(side=tk.LEFT)
-    
-    def load_tx_details(self):
-        """Load transaction details and find spendable outputs"""
-        threading.Thread(target=self._load_tx_details, daemon=True).start()
-    
-    def _load_tx_details(self):
-        try:
-            tx = self.tx
-            our_addresses = self.tx_info['our_addresses']
-            
-            # Calculate parent fee
-            total_input = sum(vin.get('prevout', {}).get('value', 0) for vin in tx.get('vin', []))
-            total_output = sum(vout.get('value', 0) for vout in tx.get('vout', []))
-            self.parent_fee = total_input - total_output
-            self.parent_vsize = tx.get('weight', 0) // 4 or 200
-            
-            # Find outputs that belong to us (spendable for CPFP)
-            self.spendable_outputs = []
-            for idx, vout in enumerate(tx.get('vout', [])):
-                addr = vout.get('scriptpubkey_address', '')
-                if addr in our_addresses:
-                    self.spendable_outputs.append({
-                        'txid': self.txid,
-                        'vout': idx,
-                        'value': vout.get('value', 0),
-                        'address': addr,
-                        'scriptpubkey': vout.get('scriptpubkey', '')
-                    })
-            
-            self.top.after(0, self._update_display)
-        except Exception as e:
-            self.top.after(0, lambda: self.status_label.config(text=f"Error: {e}", fg='#e74c3c'))
-    
-    def _update_display(self):
-        parent_rate = self.parent_fee / self.parent_vsize if self.parent_vsize else 0
-        self.parent_fee_label.config(text=f"Parent fee: {self.parent_fee:,} sats ({parent_rate:.1f} sat/vB)")
-        
-        total_spendable = sum(o['value'] for o in self.spendable_outputs)
-        self.spendable_label.config(text=f"Spendable outputs: {len(self.spendable_outputs)} ({total_spendable:,} sats)")
-        
-        if self.spendable_outputs:
-            self.cpfp_btn.config(state='normal')
-            self.update_calculation()
-        else:
-            self.status_label.config(text="No spendable outputs found in this transaction", fg='#e74c3c')
-    
-    def update_calculation(self):
-        """Calculate required child fee for target package rate"""
-        if not self.spendable_outputs:
-            return
-        
-        try:
-            target_rate = int(self.target_fee_var.get())
-            
-            # Child tx estimated vsize (1 P2WPKH input + 1 output ≈ 110 vB)
-            child_vsize = 110
-            
-            # Total package size
-            package_vsize = self.parent_vsize + child_vsize
-            
-            # Total fee needed for target rate
-            total_fee_needed = target_rate * package_vsize
-            
-            # Child must pay the difference
-            child_fee = total_fee_needed - self.parent_fee
-            child_fee = max(child_fee, child_vsize)  # Minimum 1 sat/vB
-            
-            # What we get back
-            input_value = sum(o['value'] for o in self.spendable_outputs)
-            remaining = input_value - child_fee
-            
-            self.calculated_child_fee = child_fee
-            
-            self.child_fee_label.config(text=f"Child tx fee needed: {child_fee:,} sats ({child_fee/child_vsize:.1f} sat/vB)")
-            
-            if remaining < 546:  # Dust limit
-                self.remaining_label.config(text=f"⚠️ Not enough funds (need {child_fee - input_value + 546:,} more sats)", fg='#e74c3c')
-                self.cpfp_btn.config(state='disabled')
-            else:
-                self.remaining_label.config(text=f"You will receive back: {remaining:,} sats", fg='#27ae60')
-                self.cpfp_btn.config(state='normal')
-                
-        except Exception as e:
-            self.child_fee_label.config(text="Child tx fee needed: --")
-    
-    def do_cpfp(self):
-        """Execute CPFP transaction"""
-        if not self.spendable_outputs:
-            return
-        
-        self.status_label.config(text="Building CPFP transaction...", fg=self.fg_dim)
-        self.cpfp_btn.config(state='disabled')
-        
-        threading.Thread(target=self._do_cpfp, daemon=True).start()
-    
-    def _do_cpfp(self):
-        """Background: build and broadcast CPFP transaction"""
-        try:
-            from wallet import build_cpfp_transaction, api_post
-            
-            child_fee = getattr(self, 'calculated_child_fee', 1000)
-            
-            # Build CPFP transaction
-            raw_tx, txid = build_cpfp_transaction(
-                self.spendable_outputs,
-                child_fee,
-                self.gui.wallet,
-                Config.KEY_ID
-            )
-            
-            # Broadcast
-            result = api_post('/tx', raw_tx.encode())
-            
-            if result:
-                self.top.after(0, lambda: self._cpfp_success(result))
-            else:
-                self.top.after(0, lambda: self._cpfp_error("Broadcast failed"))
-                
-        except Exception as e:
-            err_msg = str(e)
-            self.top.after(0, lambda: self._cpfp_error(err_msg))
-    
-    def _cpfp_success(self, new_txid):
-        explorer = "mempool.space/testnet4" if Config.NETWORK == "testnet" else "mempool.space"
-        messagebox.showinfo("CPFP Success!", 
-            f"Acceleration transaction broadcast!\n\nChild TXID:\n{new_txid}\n\nhttps://{explorer}/tx/{new_txid}")
-        self.top.destroy()
-        self.gui.refresh_balance()
-        self.gui.refresh_history()
-    
-    def _cpfp_error(self, error):
-        self.status_label.config(text=f"Error: {error}", fg='#e74c3c')
-        self.cpfp_btn.config(state='normal')
-
-
 class CreateWalletDialog:
     """Dialog for creating a new wallet with seed phrase"""
 
@@ -2348,7 +1617,7 @@ class CreateWalletDialog:
         self.keyid = keyid
         self.mnemonic = None
         self.confirmed = False
-        self.word_count = 24  # Default to 24 words (256 bits) for better security
+        self.word_count = 12  # Default to 12 words
         self.lazy_mode = False  # Lazy mode skips verification, allows clipboard copy
 
         # Colors
@@ -2359,167 +1628,36 @@ class CreateWalletDialog:
         self.fg_dim = '#888'
         self.accent = '#f39c12'
         self.accent_green = '#27ae60'
-        self.accent_yellow = '#f1c40f'
+        self.accent_red = '#e74c3c'
+        self.accent_yolo = '#ff6b6b'  # YOLO color
 
         self.top = tk.Toplevel(parent)
         self.top.title("Create New Wallet")
-        self.top.geometry("620x800")
+        self.top.geometry("620x780")  # Taller to fit 24 words + buttons
         self.top.configure(bg=self.bg)
         self.top.transient(parent)
         self.top.grab_set()
         
         # Bind cleanup on close
-        self.top.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.top.protocol("WM_DELETE_WINDOW", self.on_close)
 
-        self.create_step0()  # Word count selection first
-    
-    def create_step0(self):
-        """Step 0: Choose word count"""
-        for widget in self.top.winfo_children():
-            widget.destroy()
-        
-        content = tk.Frame(self.top, bg=self.bg, padx=30, pady=25)
-        content.pack(fill=tk.BOTH, expand=True)
-        
-        tk.Label(content, text="SEED PHRASE LENGTH", font=('Segoe UI', 16, 'bold'),
-                 fg=self.accent, bg=self.bg).pack(anchor=tk.W, pady=(0, 5))
-        
-        tk.Label(content, text="Choose the length of your seed phrase:",
-                 font=('Segoe UI', 10), fg=self.fg_dim, bg=self.bg).pack(anchor=tk.W, pady=(0, 20))
-        
-        # Options frame
-        options_frame = tk.Frame(content, bg=self.bg)
-        options_frame.pack(fill=tk.X, pady=(0, 20))
-        
-        self.word_count_var = tk.IntVar(value=24)
-        
-        # 12 words option
-        frame12 = tk.Frame(options_frame, bg=self.bg_card, padx=20, pady=15)
-        frame12.pack(fill=tk.X, pady=(0, 10))
-        
-        tk.Radiobutton(frame12, text="12 Words (128 bits)", 
-                       variable=self.word_count_var, value=12,
-                       font=('Segoe UI', 12, 'bold'), fg=self.fg, bg=self.bg_card,
-                       selectcolor=self.bg_input, activebackground=self.bg_card,
-                       activeforeground=self.fg).pack(anchor=tk.W)
-        tk.Label(frame12, text="Standard security. Faster to write down.",
-                 font=('Segoe UI', 9), fg=self.fg_dim, bg=self.bg_card).pack(anchor=tk.W, padx=(20, 0))
-        
-        # 24 words option (recommended)
-        frame24 = tk.Frame(options_frame, bg=self.bg_card, padx=20, pady=15)
-        frame24.pack(fill=tk.X)
-        
-        row24 = tk.Frame(frame24, bg=self.bg_card)
-        row24.pack(anchor=tk.W)
-        tk.Radiobutton(row24, text="24 Words (256 bits)", 
-                       variable=self.word_count_var, value=24,
-                       font=('Segoe UI', 12, 'bold'), fg=self.fg, bg=self.bg_card,
-                       selectcolor=self.bg_input, activebackground=self.bg_card,
-                       activeforeground=self.fg).pack(side=tk.LEFT)
-        tk.Label(row24, text="RECOMMENDED", font=('Segoe UI', 9, 'bold'),
-                 fg=self.accent_green, bg=self.bg_card).pack(side=tk.LEFT, padx=(10, 0))
-        
-        tk.Label(frame24, text="Maximum security. Industry standard for hardware wallets.",
-                 font=('Segoe UI', 9), fg=self.fg_dim, bg=self.bg_card).pack(anchor=tk.W, padx=(20, 0))
-        
-        # Info
-        info_frame = tk.Frame(content, bg='#1a2a3a', padx=15, pady=12)
-        info_frame.pack(fill=tk.X, pady=(20, 0))
-        tk.Label(info_frame, text="ℹ️ Both use SE050 hardware TRNG (AIS31 PTG.2 certified)",
-                 font=('Segoe UI', 9), fg='#3498db', bg='#1a2a3a').pack(anchor=tk.W)
-        tk.Label(info_frame, text="24 words provides 2¹²⁸ times more combinations than 12 words",
-                 font=('Segoe UI', 9), fg='#3498db', bg='#1a2a3a').pack(anchor=tk.W)
-        
-        # Lazy mode option
-        lazy_frame = tk.Frame(content, bg=self.bg_card, padx=15, pady=12)
-        lazy_frame.pack(fill=tk.X, pady=(15, 0))
-        
-        self.lazy_mode_var = tk.BooleanVar(value=False)
-        
-        lazy_row = tk.Frame(lazy_frame, bg=self.bg_card)
-        lazy_row.pack(anchor=tk.W)
-        tk.Checkbutton(lazy_row, text="Lazy Mode", 
-                       variable=self.lazy_mode_var,
-                       font=('Segoe UI', 11, 'bold'), fg=self.accent_yellow, bg=self.bg_card,
-                       selectcolor=self.bg_input, activebackground=self.bg_card,
-                       activeforeground=self.accent_yellow).pack(side=tk.LEFT)
-        tk.Label(lazy_row, text="(YOLO)", font=('Segoe UI', 9, 'bold'),
-                 fg='#e74c3c', bg=self.bg_card).pack(side=tk.LEFT, padx=(5, 0))
-        
-        tk.Label(lazy_frame, text="Skip verification. Copy-paste seed to clipboard.",
-                 font=('Segoe UI', 9), fg=self.fg_dim, bg=self.bg_card).pack(anchor=tk.W, padx=(20, 0))
-        tk.Label(lazy_frame, text="⚠️ For testing/degen purposes only. Not opsec-approved.",
-                 font=('Segoe UI', 9), fg='#e74c3c', bg=self.bg_card).pack(anchor=tk.W, padx=(20, 0))
-        
-        # Buttons
-        btn_frame = tk.Frame(content, bg=self.bg)
-        btn_frame.pack(fill=tk.X, pady=(30, 0))
-        
-        tk.Button(btn_frame, text="Continue →", font=('Segoe UI', 11, 'bold'),
-                  bg=self.accent_green, fg='#fff', relief=tk.FLAT, padx=20, pady=10,
-                  command=self._proceed_to_step1).pack(side=tk.LEFT, padx=(0, 10))
-        
-        tk.Button(btn_frame, text="Cancel", font=('Segoe UI', 10),
-                  bg=self.bg_card, fg=self.fg_dim, relief=tk.FLAT, padx=15, pady=10,
-                  command=self._on_close).pack(side=tk.LEFT)
-    
-    def _proceed_to_step1(self):
-        self.word_count = self.word_count_var.get()
-        self.lazy_mode = self.lazy_mode_var.get()
         self.create_step1()
     
-    def _on_close(self):
-        """Cleanup sensitive data when dialog closes"""
-        self._clear_mnemonic()
-        self.top.destroy()
-    
-    def _clear_mnemonic(self):
-        """Securely clear mnemonic from memory"""
+    def on_close(self):
+        """Clean up mnemonic from memory on close"""
         if self.mnemonic:
-            # Overwrite string in place (best effort for Python strings)
-            try:
-                import ctypes
-                str_addr = id(self.mnemonic)
-                str_len = len(self.mnemonic)
-                ctypes.memset(str_addr + 48, 0, str_len)  # CPython string offset
-            except:
-                pass
             self.mnemonic = None
-            import gc
-            gc.collect()
+        self.top.destroy()
 
     def create_step1(self):
         """Step 1: Generate and display seed phrase"""
-        # Clear any previous mnemonic
-        self._clear_mnemonic()
+        # Generate mnemonic based on word count
+        strength = 256 if self.word_count == 24 else 128
+        self.mnemonic = generate_mnemonic(strength)
         
-        # Calculate entropy bytes needed: 12 words = 16 bytes, 24 words = 32 bytes
-        entropy_bytes = {12: 16, 24: 32}.get(self.word_count, 16)
-        
-        # Generate mnemonic using SE050 TRNG only (AIS31 PTG.2 certified)
-        entropy = get_verified_entropy(entropy_bytes, max_attempts=3)
-        
-        if entropy is None or len(entropy) < entropy_bytes:
-            # TRNG failed - don't proceed with weak entropy
-            messagebox.showerror("Entropy Error", 
-                f"Failed to get {entropy_bytes} bytes from SE050 TRNG.\n\n"
-                "Cannot create wallet without hardware random.\n\n"
-                "Check SE050 connection and try again.")
-            self.top.destroy()
-            return
-        
-        # Verify we got good entropy
-        quality = verify_entropy_quality(entropy, min_bytes=entropy_bytes)
-        if not quality['passed']:
-            messagebox.showerror("Entropy Error",
-                "SE050 TRNG quality check failed.\n\n"
-                f"Details: {'; '.join(quality['details'])}\n\n"
-                "Try again or check hardware.")
-            self.top.destroy()
-            return
-        
-        self.mnemonic = _generate_mnemonic_from_entropy(entropy)
-        self._entropy_source = f"SE050 TRNG (AIS31 PTG.2) - {entropy_bytes * 8} bits"
+        # Resize window based on word count
+        height = 850 if self.word_count == 24 else 750
+        self.top.geometry(f"620x{height}")
 
         # Clear window
         for widget in self.top.winfo_children():
@@ -2533,131 +1671,147 @@ class CreateWalletDialog:
                  fg=self.accent, bg=self.bg).pack(anchor=tk.W, pady=(0, 5))
 
         tk.Label(content, text=f"These {self.word_count} words are your wallet backup. Write them down NOW!",
-                 font=('Segoe UI', 10), fg=self.fg_dim, bg=self.bg).pack(anchor=tk.W, pady=(0, 20))
+                 font=('Segoe UI', 10), fg=self.fg_dim, bg=self.bg).pack(anchor=tk.W, pady=(0, 15))
 
-        # Warning
-        warn_frame = tk.Frame(content, bg='#8B0000', padx=15, pady=12)
-        warn_frame.pack(fill=tk.X, pady=(0, 20))
-        tk.Label(warn_frame, text="WARNING: If you lose these words, you lose your Bitcoin forever!",
+        # Word count selector
+        wc_frame = tk.Frame(content, bg=self.bg)
+        wc_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        tk.Label(wc_frame, text="Seed length:", font=('Segoe UI', 9),
+                 fg=self.fg_dim, bg=self.bg).pack(side=tk.LEFT)
+        
+        self.wc_var = tk.IntVar(value=self.word_count)
+        for wc in [12, 24]:
+            rb = tk.Radiobutton(wc_frame, text=f"{wc} words", variable=self.wc_var, value=wc,
+                               font=('Segoe UI', 9), bg=self.bg, fg=self.fg,
+                               selectcolor=self.bg_card, activebackground=self.bg,
+                               command=self.on_word_count_change)
+            rb.pack(side=tk.LEFT, padx=(15, 0))
+        
+        # Lazy mode toggle
+        lazy_frame = tk.Frame(content, bg=self.bg_card, padx=12, pady=10)
+        lazy_frame.pack(fill=tk.X, pady=(0, 15))
+        
+        self.lazy_var = tk.BooleanVar(value=self.lazy_mode)
+        lazy_cb = tk.Checkbutton(lazy_frame, text="🦥 Lazy Mode (skip verification, enable copy)", 
+                                 variable=self.lazy_var, font=('Segoe UI', 10),
+                                 bg=self.bg_card, fg=self.accent_yolo,
+                                 selectcolor=self.bg_input, activebackground=self.bg_card,
+                                 command=self.on_lazy_toggle)
+        lazy_cb.pack(anchor=tk.W)
+        
+        lazy_warning = tk.Label(lazy_frame, 
+                               text="⚠️ YOLO mode: Less secure, but you do you",
+                               font=('Segoe UI', 8), fg='#ff9999', bg=self.bg_card)
+        lazy_warning.pack(anchor=tk.W, padx=(20, 0))
+
+        # Warning (hidden in lazy mode)
+        self.warn_frame = tk.Frame(content, bg='#8B0000', padx=15, pady=12)
+        self.warn_frame.pack(fill=tk.X, pady=(0, 15))
+        tk.Label(self.warn_frame, text="WARNING: If you lose these words, you lose your Bitcoin forever!",
                  font=('Segoe UI', 10, 'bold'), fg='#fff', bg='#8B0000').pack()
-        tk.Label(warn_frame, text="Never share them. Never store them digitally. Write on paper only.",
+        tk.Label(self.warn_frame, text="Never share them. Never store them digitally. Write on paper only.",
                  font=('Segoe UI', 9), fg='#ffcccc', bg='#8B0000').pack()
 
         # Seed phrase display
-        seed_frame = tk.Frame(content, bg=self.bg_card, padx=20, pady=15)
+        seed_frame = tk.Frame(content, bg=self.bg_card, padx=20, pady=20)
         seed_frame.pack(fill=tk.X, pady=(0, 15))
 
         words = self.mnemonic.split()
-        cols = 3 if self.word_count == 12 else 4  # 4 columns for 24 words
+        cols = 3 if self.word_count == 12 else 4
+        rows = self.word_count // cols
+        
         for i in range(0, self.word_count, cols):
             row = tk.Frame(seed_frame, bg=self.bg_card)
-            row.pack(fill=tk.X, pady=3)
+            row.pack(fill=tk.X, pady=4)
             for j in range(cols):
                 idx = i + j
-                if idx < self.word_count:
-                    word_frame = tk.Frame(row, bg=self.bg_input, padx=8, pady=6)
-                    word_frame.pack(side=tk.LEFT, padx=3, expand=True, fill=tk.X)
-                    tk.Label(word_frame, text=f"{idx+1}.", font=('Consolas', 10),
-                             fg=self.fg_dim, bg=self.bg_input, width=2).pack(side=tk.LEFT)
-                    tk.Label(word_frame, text=words[idx], font=('Consolas', 11, 'bold'),
-                             fg=self.accent_green, bg=self.bg_input).pack(side=tk.LEFT, padx=(3, 0))
+                if idx >= self.word_count:
+                    break
+                word_frame = tk.Frame(row, bg=self.bg_input, padx=8, pady=6)
+                word_frame.pack(side=tk.LEFT, padx=4, expand=True, fill=tk.X)
+                tk.Label(word_frame, text=f"{idx+1}.", font=('Consolas', 10),
+                         fg=self.fg_dim, bg=self.bg_input, width=3).pack(side=tk.LEFT)
+                tk.Label(word_frame, text=words[idx], font=('Consolas', 12, 'bold'),
+                         fg=self.accent_green, bg=self.bg_input).pack(side=tk.LEFT, padx=(3, 0))
 
-        # Entropy source indicator
-        entropy_src = getattr(self, '_entropy_source', 'Unknown')
-        entropy_color = '#27ae60' if 'SE050' in entropy_src and 'verified' in entropy_src else '#f39c12'
-        tk.Label(content, text=f"🔐 Entropy: {entropy_src}",
-                 font=('Segoe UI', 9), fg=entropy_color, bg=self.bg).pack(anchor=tk.W, pady=(0, 10))
-
-        # Lazy mode: show copy button and skip verification option
+        # Copy button (only visible in lazy mode)
+        self.copy_frame = tk.Frame(content, bg=self.bg)
+        self.copy_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        self.copy_btn = tk.Button(self.copy_frame, text="📋 Copy All Words to Clipboard", 
+                                  font=('Segoe UI', 10, 'bold'),
+                                  bg=self.accent_yolo, fg='#000', relief=tk.FLAT, padx=15, pady=8,
+                                  command=self.copy_seed_to_clipboard)
+        # Initially hidden unless lazy mode
         if self.lazy_mode:
-            lazy_info = tk.Frame(content, bg='#3a2a1a', padx=15, pady=12)
-            lazy_info.pack(fill=tk.X, pady=(5, 10))
-            tk.Label(lazy_info, text="🦥 LAZY MODE ACTIVE", font=('Segoe UI', 10, 'bold'),
-                     fg=self.accent_yellow, bg='#3a2a1a').pack(anchor=tk.W)
-            tk.Label(lazy_info, text="Verification skipped. Don't say we didn't warn you.",
-                     font=('Segoe UI', 9), fg='#cca', bg='#3a2a1a').pack(anchor=tk.W)
-            
-            # Copy to clipboard button
-            copy_frame = tk.Frame(content, bg=self.bg)
-            copy_frame.pack(fill=tk.X, pady=(5, 15))
-            
-            self.copy_btn = tk.Button(copy_frame, text="📋 Copy All Words to Clipboard", 
-                      font=('Segoe UI', 10, 'bold'),
-                      bg='#2a4a6a', fg='#fff', relief=tk.FLAT, padx=15, pady=8,
-                      command=self._copy_seed_to_clipboard)
-            self.copy_btn.pack(side=tk.LEFT, padx=(0, 10))
-            
-            self.copy_status = tk.Label(copy_frame, text="", font=('Segoe UI', 9),
-                                        fg=self.fg_dim, bg=self.bg)
-            self.copy_status.pack(side=tk.LEFT)
+            self.copy_btn.pack(pady=(5, 0))
 
         # Instructions
-        if self.lazy_mode:
-            tk.Label(content, text="1. Copy seed or screenshot it (living dangerously)",
-                     font=('Segoe UI', 10), fg=self.accent_yellow, bg=self.bg).pack(anchor=tk.W, pady=(10, 2))
-            tk.Label(content, text="2. Click 'Create Wallet' when ready",
-                     font=('Segoe UI', 10), fg=self.fg, bg=self.bg).pack(anchor=tk.W, pady=2)
-        else:
-            tk.Label(content, text=f"1. Write down all {self.word_count} words in order on paper",
-                     font=('Segoe UI', 10), fg=self.fg, bg=self.bg).pack(anchor=tk.W, pady=(10, 2))
-            tk.Label(content, text="2. Store the paper in a safe place",
-                     font=('Segoe UI', 10), fg=self.fg, bg=self.bg).pack(anchor=tk.W, pady=2)
-            tk.Label(content, text="3. Click 'I've Written It Down' to continue",
-                     font=('Segoe UI', 10), fg=self.fg, bg=self.bg).pack(anchor=tk.W, pady=2)
+        tk.Label(content, text="1. Write down all words in order on paper",
+                 font=('Segoe UI', 10), fg=self.fg, bg=self.bg).pack(anchor=tk.W, pady=(5, 2))
+        tk.Label(content, text="2. Store the paper in a safe place",
+                 font=('Segoe UI', 10), fg=self.fg, bg=self.bg).pack(anchor=tk.W, pady=2)
+        tk.Label(content, text="3. Click 'Continue' to proceed",
+                 font=('Segoe UI', 10), fg=self.fg, bg=self.bg).pack(anchor=tk.W, pady=2)
 
         # Buttons
         btn_frame = tk.Frame(content, bg=self.bg)
-        btn_frame.pack(fill=tk.X, pady=(25, 0))
+        btn_frame.pack(fill=tk.X, pady=(20, 0))
 
-        if self.lazy_mode:
-            # Lazy mode: direct create button (skip verification)
-            tk.Button(btn_frame, text="Create Wallet (YOLO)", font=('Segoe UI', 11, 'bold'),
-                      bg='#c0392b', fg='#fff', relief=tk.FLAT, padx=20, pady=10,
-                      command=self._lazy_create_wallet).pack(side=tk.LEFT, padx=(0, 10))
-        else:
-            tk.Button(btn_frame, text="I've Written It Down", font=('Segoe UI', 11, 'bold'),
-                      bg=self.accent_green, fg='#fff', relief=tk.FLAT, padx=20, pady=10,
-                      command=self.create_step2).pack(side=tk.LEFT, padx=(0, 10))
+        self.continue_btn = tk.Button(btn_frame, text="I've Written It Down →", 
+                                      font=('Segoe UI', 11, 'bold'),
+                                      bg=self.accent_green, fg='#fff', relief=tk.FLAT, padx=20, pady=10,
+                                      command=self.on_continue)
+        self.continue_btn.pack(side=tk.LEFT, padx=(0, 10))
 
-        tk.Button(btn_frame, text="Generate New", font=('Segoe UI', 10),
+        tk.Button(btn_frame, text="🔄 Generate New", font=('Segoe UI', 10),
                   bg=self.bg_card, fg=self.fg_dim, relief=tk.FLAT, padx=15, pady=10,
                   command=self.create_step1).pack(side=tk.LEFT, padx=(0, 10))
 
         tk.Button(btn_frame, text="Cancel", font=('Segoe UI', 10),
                   bg=self.bg_card, fg=self.fg_dim, relief=tk.FLAT, padx=15, pady=10,
-                  command=self._on_close).pack(side=tk.LEFT)
+                  command=self.on_close).pack(side=tk.LEFT)
     
-    def _copy_seed_to_clipboard(self):
+    def on_word_count_change(self):
+        """Handle word count change"""
+        new_wc = self.wc_var.get()
+        if new_wc != self.word_count:
+            self.word_count = new_wc
+            self.create_step1()  # Regenerate with new word count
+    
+    def on_lazy_toggle(self):
+        """Handle lazy mode toggle"""
+        self.lazy_mode = self.lazy_var.get()
+        
+        # Show/hide copy button
+        if self.lazy_mode:
+            self.copy_btn.pack(pady=(5, 0))
+            self.continue_btn.config(text="Skip Verification & Create →")
+        else:
+            self.copy_btn.pack_forget()
+            self.continue_btn.config(text="I've Written It Down →")
+    
+    def copy_seed_to_clipboard(self):
         """Copy seed phrase to clipboard (lazy mode only)"""
-        if self.mnemonic:
+        if self.mnemonic and self.lazy_mode:
             self.top.clipboard_clear()
             self.top.clipboard_append(self.mnemonic)
-            self.top.update()  # Required for clipboard to persist
-            self.copy_status.config(text="✓ Copied! (clears in 60s)", fg=self.accent_green)
-            self.copy_btn.config(text="📋 Copied!", bg='#27ae60')
             
-            # Clear clipboard after 60 seconds for safety
-            def clear_clipboard():
-                try:
-                    current = self.top.clipboard_get()
-                    if current == self.mnemonic:
-                        self.top.clipboard_clear()
-                        self.top.clipboard_append("")
-                except:
-                    pass  # Dialog may be closed
-            
-            self.top.after(60000, clear_clipboard)
+            # Visual feedback
+            orig_text = self.copy_btn.cget('text')
+            self.copy_btn.config(text="✓ Copied!", bg='#27ae60')
+            self.top.after(2000, lambda: self.copy_btn.config(text=orig_text, bg=self.accent_yolo))
     
-    def _lazy_create_wallet(self):
-        """Create wallet without verification (lazy mode)"""
-        # Copy mnemonic before clearing
-        mnemonic_copy = self.mnemonic
-        
-        # Clear mnemonic from dialog memory
-        self._clear_mnemonic()
-        
-        self.top.destroy()
-        self.gui.finalize_wallet_from_seed(mnemonic_copy, self.keyid)
+    def on_continue(self):
+        """Handle continue button - either verify or skip"""
+        if self.lazy_mode:
+            # Skip verification, go straight to wallet creation
+            self.top.destroy()
+            self.gui.finalize_wallet_from_seed(self.mnemonic, self.keyid)
+        else:
+            # Go to verification step
+            self.create_step2()
 
     def create_step2(self):
         """Step 2: Verify seed phrase"""
@@ -2679,10 +1833,9 @@ class CreateWalletDialog:
         tk.Label(content, text=f"Enter all {self.word_count} words separated by spaces:",
                  font=('Segoe UI', 10), fg=self.fg, bg=self.bg).pack(anchor=tk.W, pady=(0, 10))
 
-        text_height = 4 if self.word_count == 12 else 6
-        self.verify_text = tk.Text(content, height=text_height, font=('Consolas', 12),
+        self.verify_text = tk.Text(content, height=4, font=('Consolas', 12),
                                     bg=self.bg_input, fg=self.fg, relief=tk.FLAT,
-                                    padx=15, pady=15, insertbackground='#fff', wrap=tk.WORD)
+                                    padx=15, pady=15, insertbackground='#fff')
         self.verify_text.pack(fill=tk.X, pady=(0, 15))
 
         # Status
@@ -2704,7 +1857,7 @@ class CreateWalletDialog:
 
         tk.Button(btn_frame, text="Cancel", font=('Segoe UI', 10),
                   bg=self.bg_card, fg=self.fg_dim, relief=tk.FLAT, padx=15, pady=10,
-                  command=self._on_close).pack(side=tk.LEFT)
+                  command=self.on_close).pack(side=tk.LEFT)
 
     def verify_and_create(self):
         """Verify entered seed matches and create wallet"""
@@ -2712,8 +1865,9 @@ class CreateWalletDialog:
         entered_words = entered.split()
 
         if len(entered_words) != self.word_count:
-            self.verify_status.config(text=f"Please enter exactly {self.word_count} words (you entered {len(entered_words)})",
-                                       fg='#e74c3c')
+            self.verify_status.config(
+                text=f"Please enter exactly {self.word_count} words (you entered {len(entered_words)})",
+                fg='#e74c3c')
             return
 
         if entered != self.mnemonic.lower():
@@ -2723,18 +1877,8 @@ class CreateWalletDialog:
 
         # Success - create wallet
         self.verify_status.config(text="Seed phrase verified! Creating wallet...", fg=self.accent_green)
-        
-        # Copy mnemonic before clearing (finalize needs it)
-        mnemonic_copy = self.mnemonic
-        
-        # Clear the mnemonic from this dialog's memory
-        self._clear_mnemonic()
-        
-        # Also clear the verify text widget
-        self.verify_text.delete("1.0", tk.END)
-        
         self.top.destroy()
-        self.gui.finalize_wallet_from_seed(mnemonic_copy, self.keyid)
+        self.gui.finalize_wallet_from_seed(self.mnemonic, self.keyid)
 
 
 class ImportWalletDialog:
@@ -2852,6 +1996,13 @@ def main():
         idx = sys.argv.index('--keyid')
         if idx + 1 < len(sys.argv):
             Config.KEY_ID = sys.argv[idx + 1]
+    
+    # Show backend info
+    print(f"SE050ARD Wallet GUI")
+    print(f"  Backend: {SE050_BACKEND}")
+    print(f"  Native C library: {'available' if is_native_available() else 'not found (using ssscli)'}")
+    print(f"  Network: {Config.NETWORK}")
+    print()
     
     # Pre-check: try to connect to SE050 before launching GUI
     port = Config.get_connection_port()

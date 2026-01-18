@@ -51,6 +51,33 @@ from pathlib import Path
 from datetime import datetime
 from typing import Tuple, Optional, List, Dict
 
+# Try to use the unified se050_interface module
+_USE_INTERFACE_MODULE = False
+try:
+    from se050_interface import (
+        get_backend as _get_backend,
+        is_native_available,
+        connect as _iface_connect,
+        disconnect as _iface_disconnect,
+        reconnect as _iface_reconnect,
+        is_connected as _iface_is_connected,
+        get_uid as _iface_get_uid,
+        get_random as _iface_get_random,
+        key_exists as _iface_key_exists,
+        generate_keypair as _iface_generate_keypair,
+        delete_key as _iface_delete_key,
+        export_pubkey as _iface_export_pubkey,
+        sign as _iface_sign,
+        set_ecc_keypair as _iface_set_keypair,
+        SE050Error as _IfaceSE050Error,
+        SE050Config,
+    )
+    _USE_INTERFACE_MODULE = True
+    print(f"[wallet] Using SE050 interface: {_get_backend()}")
+except ImportError as e:
+    _USE_INTERFACE_MODULE = False
+    print(f"[wallet] Using built-in ssscli wrapper (se050_interface.py not found: {e})")
+
 # ============================================================================
 #                              QR CODE GENERATION
 # ============================================================================
@@ -889,10 +916,23 @@ def compress_pubkey(pubkey: bytes) -> bytes:
     return prefix + x
 
 def parse_der_pubkey(der_data: bytes) -> bytes:
-    """Extract 65-byte uncompressed public key from DER-encoded SubjectPublicKeyInfo"""
+    """Extract 65-byte uncompressed public key from DER-encoded or raw format.
+    
+    Accepts:
+    - Raw 65-byte uncompressed pubkey starting with 0x04
+    - DER-encoded SubjectPublicKeyInfo
+    """
+    # Check if it's already raw 65-byte uncompressed pubkey
+    if len(der_data) == 65 and der_data[0] == 0x04:
+        return der_data
+    
+    # Otherwise try to find 0x04 marker in DER structure
     idx = der_data.find(b'\x04', 20)
     if idx == -1:
-        raise ValueError("Could not find uncompressed public key marker in DER data")
+        # Try from beginning for shorter DER formats
+        idx = der_data.find(b'\x04')
+        if idx == -1 or idx + 65 > len(der_data):
+            raise ValueError("Could not find uncompressed public key marker in DER data")
     return der_data[idx:idx + 65]
 
 def derive_addresses(pubkey_compressed: bytes) -> Dict[str, str]:
@@ -928,6 +968,8 @@ def run_ssscli(args: List[str], check: bool = True) -> subprocess.CompletedProce
 
 def se050_check_connection() -> bool:
     """Check if SE050 is connected and accessible"""
+    if _USE_INTERFACE_MODULE:
+        return _iface_is_connected()
     try:
         result = run_ssscli(['se05x', 'uid'], check=False)
         return result.returncode == 0
@@ -936,6 +978,13 @@ def se050_check_connection() -> bool:
 
 def se050_connect(retries: int = 3, debug: bool = False) -> bool:
     """Establish connection to SE050 with verification"""
+    if _USE_INTERFACE_MODULE:
+        try:
+            return _iface_connect(retries=retries, debug=debug)
+        except Exception as e:
+            if debug:
+                print(f"Interface connect failed: {e}")
+            return False
     import time
     
     port = Config.get_connection_port()
@@ -967,7 +1016,7 @@ def se050_connect(retries: int = 3, debug: bool = False) -> bool:
             if debug:
                 print(f"  [DEBUG] Connecting: ssscli connect se05x {conn_type} {port}")
             result = subprocess.run(
-                ['ssscli', 'connect', 'se05x', conn_type, port],
+                ['ssscli', 'connect', 'se05x', conn_type, port, '--auth_type', 'PlatformSCP', '--scpkey', str(Path.home() / '.se050-wallet' / 'scp03.key')],
                 capture_output=True, text=True, timeout=15
             )
             if debug:
@@ -1011,6 +1060,9 @@ def se050_connect(retries: int = 3, debug: bool = False) -> bool:
 
 def se050_disconnect():
     """Disconnect from SE050"""
+    if _USE_INTERFACE_MODULE:
+        _iface_disconnect()
+        return
     try:
         subprocess.run(['ssscli', 'disconnect'], capture_output=True, timeout=5)
     except:
@@ -1018,6 +1070,8 @@ def se050_disconnect():
 
 def se050_reconnect() -> bool:
     """Force disconnect and reconnect"""
+    if _USE_INTERFACE_MODULE:
+        return _iface_reconnect()
     se050_disconnect()
     import time
     time.sleep(0.5)
@@ -1025,6 +1079,8 @@ def se050_reconnect() -> bool:
 
 def se050_get_uid() -> Optional[str]:
     """Get SE050 unique identifier"""
+    if _USE_INTERFACE_MODULE:
+        return _iface_get_uid()
     try:
         result = run_ssscli(['se05x', 'uid'])
         for line in result.stdout.split('\n'):
@@ -1036,227 +1092,29 @@ def se050_get_uid() -> Optional[str]:
     except SE050Error:
         return None
 
-def se050_get_random(num_bytes: int = 16) -> Optional[bytes]:
-    """
-    Get random bytes from SE050 TRNG (True Random Number Generator).
-    
-    The SE050 TRNG is AIS31 PTG.2 compliant, providing high-quality 
-    hardware-generated random numbers.
-    
-    Note: ssscli se05x getrng returns exactly 10 bytes per call.
-    For more bytes, we call multiple times and concatenate.
-    
-    Args:
-        num_bytes: Number of random bytes requested (default 16)
-        
-    Returns:
-        Random bytes from SE050, or None on failure
-    """
-    collected = bytearray()
-    calls_needed = (num_bytes + 9) // 10  # Ceiling division by 10
-    
-    for i in range(calls_needed):
-        try:
-            result = run_ssscli(['se05x', 'getrng'])
-            
-            # Parse output - format is:
-            # "Random number: b1d5554c82fb6ee0e2ec"
-            # or just the hex on its own line
-            chunk = None
-            for line in result.stdout.split('\n'):
-                line = line.strip()
-                
-                # Skip info/warning lines
-                if not line or line.startswith('sss') or line.startswith('smCom'):
-                    continue
-                
-                # Look for "Random number:" prefix
-                if 'random number:' in line.lower():
-                    # Extract hex after the colon
-                    parts = line.split(':')
-                    if len(parts) >= 2:
-                        hex_str = parts[-1].strip()
-                        hex_str = ''.join(c for c in hex_str if c in '0123456789abcdefABCDEF')
-                        if len(hex_str) >= 2:
-                            chunk = bytes.fromhex(hex_str)
-                            break
-                
-                # Or just a line of hex (20 chars = 10 bytes)
+def se050_get_random(num_bytes: int = 10) -> Optional[bytes]:
+    """Get random bytes from SE050 TRNG"""
+    if _USE_INTERFACE_MODULE:
+        return _iface_get_random(num_bytes)
+    try:
+        result = run_ssscli(['se05x', 'getrng'])
+        for line in result.stdout.split('\n'):
+            if 'random' in line.lower():
                 hex_str = ''.join(c for c in line if c in '0123456789abcdefABCDEF')
-                if len(hex_str) == 20:  # Exactly 10 bytes
-                    chunk = bytes.fromhex(hex_str)
-                    break
-            
-            if chunk:
-                collected.extend(chunk)
-            else:
-                # Failed to parse this call
-                print(f"Warning: Failed to parse SE050 getrng output (call {i+1})")
-                
-        except SE050Error as e:
-            print(f"Warning: SE050 getrng failed (call {i+1}): {e}")
-            break
-    
-    if len(collected) >= num_bytes:
-        return bytes(collected[:num_bytes])
-    elif len(collected) > 0:
-        # Got partial data
-        return bytes(collected)
-    else:
+                if hex_str:
+                    return bytes.fromhex(hex_str)
         return None
-
-
-def verify_entropy_quality(data: bytes, min_bytes: int = 16) -> dict:
-    """
-    Perform basic entropy quality checks on random data.
-    
-    This is NOT a replacement for formal NIST SP800-90B testing,
-    but catches obvious problems like all-zeros, repeating patterns,
-    or heavily biased data.
-    
-    Args:
-        data: Random bytes to test
-        min_bytes: Minimum bytes required
-        
-    Returns:
-        Dict with 'passed' bool and 'details' list of check results
-    """
-    results = {
-        'passed': True,
-        'details': [],
-        'entropy_estimate': 0.0
-    }
-    
-    if len(data) < min_bytes:
-        results['passed'] = False
-        results['details'].append(f"FAIL: Only {len(data)} bytes, need {min_bytes}")
-        return results
-    
-    results['details'].append(f"OK: Got {len(data)} bytes")
-    
-    # Check 1: Not all zeros
-    if data == bytes(len(data)):
-        results['passed'] = False
-        results['details'].append("FAIL: All zeros")
-        return results
-    results['details'].append("OK: Not all zeros")
-    
-    # Check 2: Not all same byte
-    if len(set(data)) == 1:
-        results['passed'] = False
-        results['details'].append(f"FAIL: All bytes are 0x{data[0]:02x}")
-        return results
-    
-    unique_bytes = len(set(data))
-    results['details'].append(f"OK: {unique_bytes} unique byte values")
-    
-    # Check 3: Minimum unique bytes for sample size
-    # For 16 bytes of good random data, expect at least 10+ unique values
-    min_unique = max(len(data) // 2, 6)
-    if unique_bytes < min_unique:
-        results['passed'] = False
-        results['details'].append(f"FAIL: Only {unique_bytes} unique bytes (expected ≥{min_unique})")
-        return results
-    
-    # Check 4: Byte frequency - no single byte should dominate
-    from collections import Counter
-    freq = Counter(data)
-    max_freq = max(freq.values())
-    
-    # For 16 bytes, a byte appearing 4+ times is suspicious
-    # For 20 bytes, 5+ times is suspicious
-    max_allowed = max(len(data) // 4, 3)
-    if max_freq > max_allowed:
-        results['passed'] = False
-        most_common_byte, count = freq.most_common(1)[0]
-        results['details'].append(f"FAIL: Byte 0x{most_common_byte:02x} appears {count} times")
-        return results
-    results['details'].append(f"OK: Max byte frequency {max_freq}/{len(data)}")
-    
-    # Check 5: Bit balance (should be roughly 50% ones)
-    ones = sum(bin(b).count('1') for b in data)
-    total_bits = len(data) * 8
-    bit_ratio = ones / total_bits
-    
-    # For 16 bytes (128 bits), allow 35-65% range
-    # Statistically, stddev ≈ sqrt(n*0.5*0.5) = sqrt(32) ≈ 5.7 bits
-    # 3 sigma = ~17 bits, so 64±17 = 47-81 ones (37%-63%)
-    tolerance = 0.15  # 35-65%
-    
-    if abs(bit_ratio - 0.5) > tolerance:
-        results['passed'] = False
-        results['details'].append(f"FAIL: Bit ratio {bit_ratio:.1%} (expected 35-65%)")
-        return results
-    results['details'].append(f"OK: Bit ratio {bit_ratio:.1%}")
-    
-    # Check 6: No obvious repeating pattern (2 or 4 byte repeat)
-    for pattern_len in [2, 4]:
-        if len(data) >= pattern_len * 2:
-            pattern = data[:pattern_len]
-            repeated = (pattern * ((len(data) // pattern_len) + 1))[:len(data)]
-            if data == repeated:
-                results['passed'] = False
-                results['details'].append(f"FAIL: Repeating {pattern_len}-byte pattern detected")
-                return results
-    results['details'].append("OK: No repeating patterns")
-    
-    # Estimate Shannon entropy (bits per byte)
-    import math
-    entropy = 0.0
-    for count in freq.values():
-        if count > 0:
-            p = count / len(data)
-            entropy -= p * math.log2(p)
-    
-    results['entropy_estimate'] = entropy
-    results['details'].append(f"OK: Estimated entropy {entropy:.2f} bits/byte")
-    
-    # For small samples, entropy estimate will be lower than true entropy
-    # Don't fail on this, just note it
-    if entropy < 3.0:
-        results['details'].append(f"WARN: Low entropy estimate (may be sample size effect)")
-    
-    return results
-
-
-def get_verified_entropy(num_bytes: int = 16, max_attempts: int = 3) -> Optional[bytes]:
-    """
-    Get random bytes from SE050 TRNG with quality verification.
-    
-    Uses SE050 hardware TRNG directly - AIS31 PTG.2 certified.
-    No software PRNG mixing needed.
-    
-    Args:
-        num_bytes: Number of bytes needed
-        max_attempts: Max retry attempts if quality check fails
-        
-    Returns:
-        High-quality random bytes from SE050 TRNG, or None on failure
-    """
-    for attempt in range(max_attempts):
-        # Get SE050 TRNG bytes
-        se050_random = se050_get_random(num_bytes)
-        
-        if se050_random and len(se050_random) >= num_bytes:
-            # Verify quality (sanity check only - TRNG is certified)
-            quality = verify_entropy_quality(se050_random[:num_bytes], min_bytes=num_bytes)
-            
-            if quality['passed']:
-                return se050_random[:num_bytes]
-            else:
-                print(f"SE050 TRNG quality check failed (attempt {attempt + 1}):")
-                for detail in quality['details']:
-                    print(f"  {detail}")
-        else:
-            got = len(se050_random) if se050_random else 0
-            print(f"SE050 TRNG returned {got}/{num_bytes} bytes (attempt {attempt + 1})")
-    
-    # All attempts failed
-    print("ERROR: SE050 TRNG unavailable or failed quality checks")
-    return None
+    except SE050Error:
+        return None
 
 def se050_generate_keypair(key_id: str, curve: str = "Secp256k1") -> bool:
     """Generate ECC keypair on SE050"""
+    if _USE_INTERFACE_MODULE:
+        try:
+            return _iface_generate_keypair(key_id, curve)
+        except Exception as e:
+            print(f"Key generation failed: {e}")
+            return False
     try:
         run_ssscli(['generate', 'ecc', key_id, curve])
         return True
@@ -1428,6 +1286,13 @@ def se050_set_ecc_keypair(key_id: str, private_key: bytes, curve: str = "Secp256
     if len(private_key) != 32:
         raise ValueError(f"Private key must be 32 bytes, got {len(private_key)}")
 
+    if _USE_INTERFACE_MODULE:
+        try:
+            return _iface_set_keypair(key_id, private_key, curve)
+        except Exception:
+            # Fall back to built-in ssscli implementation
+            pass
+
     key_file = Path("/tmp/se050_import_key.bin")
     last_error = None
     
@@ -1522,6 +1387,16 @@ def se050_set_ecc_keypair(key_id: str, private_key: bytes, curve: str = "Secp256
 
 def se050_export_pubkey(key_id: str, output_path: Path, format: str = "DER") -> bool:
     """Export public key from SE050"""
+    if _USE_INTERFACE_MODULE:
+        try:
+            result = _iface_export_pubkey(key_id, output_path, format)
+            # Interface returns bytes; if we got data and output_path exists, success
+            if result and isinstance(result, bytes):
+                return True
+            return bool(result)
+        except Exception as e:
+            print(f"Public key export failed: {e}")
+            return False
     try:
         run_ssscli(['get', 'ecc', 'pub', key_id, str(output_path), '--format', format])
         return True
@@ -1531,6 +1406,12 @@ def se050_export_pubkey(key_id: str, output_path: Path, format: str = "DER") -> 
 
 def se050_delete_key(key_id: str) -> bool:
     """Delete key from SE050"""
+    if _USE_INTERFACE_MODULE:
+        try:
+            return _iface_delete_key(key_id)
+        except Exception as e:
+            print(f"Key deletion failed: {e}")
+            return False
     try:
         run_ssscli(['erase', key_id])
         return True
@@ -1546,6 +1427,9 @@ def se050_sign(key_id: str, data: bytes) -> bytes:
     of the preimage, and ssscli does the second SHA256 to produce the
     final sighash that gets signed.
     """
+    if _USE_INTERFACE_MODULE:
+        sig = _iface_sign(key_id, data)
+        return normalize_signature(sig)
     data_file = Path("/tmp/se050_sign_input.bin")
     sig_file = Path("/tmp/se050_signature.der")
     
@@ -1573,6 +1457,8 @@ def se050_sign(key_id: str, data: bytes) -> bytes:
 
 def se050_key_exists(key_id: str) -> bool:
     """Check if key exists in SE050"""
+    if _USE_INTERFACE_MODULE:
+        return _iface_key_exists(key_id)
     try:
         temp_file = Path(f"/tmp/check_{key_id}.der")
         result = run_ssscli(['get', 'ecc', 'pub', key_id, str(temp_file), '--format', 'DER'], check=False)
@@ -1756,9 +1642,6 @@ def varint(n: int) -> bytes:
     else:
         return b'\xff' + n.to_bytes(8, 'little')
 
-# Alias for consistency
-encode_varint = varint
-
 def build_p2wpkh_sighash_preimage(
     inputs: List[Dict],
     outputs: List[Dict],
@@ -1922,362 +1805,6 @@ class Wallet:
         if not self.pubkey_compressed:
             raise ValueError("Wallet not loaded")
         return hash160(self.pubkey_compressed)
-
-# ============================================================================
-#                              RBF & CPFP SUPPORT
-# ============================================================================
-
-def build_rbf_transaction(
-    original_tx: Dict,
-    new_fee_rate: int,
-    wallet: 'Wallet',
-    key_id: str
-) -> Tuple[str, str]:
-    """
-    Build an RBF (Replace-By-Fee) transaction to bump fee on unconfirmed tx.
-    
-    Args:
-        original_tx: The original transaction data from mempool API
-        new_fee_rate: Target fee rate in sat/vB
-        wallet: Wallet instance for signing
-        key_id: SE050 key ID
-    
-    Returns:
-        Tuple of (raw_tx_hex, new_txid)
-    """
-    our_addresses = {wallet.addresses['segwit'], wallet.addresses['legacy']}
-    
-    # Collect original inputs
-    inputs = []
-    total_input_value = 0
-    
-    for vin in original_tx.get('vin', []):
-        prevout = vin.get('prevout', {})
-        prev_addr = prevout.get('scriptpubkey_address', '')
-        
-        # Only include inputs we control
-        if prev_addr in our_addresses:
-            inputs.append({
-                'txid': vin.get('txid'),
-                'vout': vin.get('vout'),
-                'value': prevout.get('value', 0),
-                'scriptpubkey': prevout.get('scriptpubkey', ''),
-                'is_segwit': prev_addr.startswith(('bc1', 'tb1'))
-            })
-            total_input_value += prevout.get('value', 0)
-    
-    if not inputs:
-        raise ValueError("No inputs controlled by this wallet")
-    
-    # Find outputs (keep same destinations, adjust change)
-    outputs = []
-    change_output_idx = None
-    
-    for idx, vout in enumerate(original_tx.get('vout', [])):
-        addr = vout.get('scriptpubkey_address', '')
-        value = vout.get('value', 0)
-        
-        if addr in our_addresses:
-            # This is our change output - we'll adjust it
-            change_output_idx = idx
-            outputs.append({'address': addr, 'value': value, 'is_change': True})
-        else:
-            # External output - keep as-is
-            outputs.append({'address': addr, 'value': value, 'is_change': False})
-    
-    # Calculate new fee
-    tx_vsize = original_tx.get('weight', 0) // 4 or 200
-    new_fee = new_fee_rate * tx_vsize
-    
-    # Adjust change output to pay new fee
-    original_fee = total_input_value - sum(o['value'] for o in outputs)
-    fee_increase = new_fee - original_fee
-    
-    if change_output_idx is not None:
-        for o in outputs:
-            if o['is_change']:
-                o['value'] -= fee_increase
-                if o['value'] < 546:
-                    raise ValueError(f"Not enough in change output to bump fee (need {fee_increase} more sats)")
-                break
-    else:
-        raise ValueError("No change output found to deduct fee from")
-    
-    # Build transaction with RBF signal (sequence = 0xfffffffd)
-    version = 2
-    sequence = 0xfffffffd  # RBF enabled
-    locktime = 0
-    
-    # Serialize inputs
-    tx_inputs = b''
-    tx_inputs += encode_varint(len(inputs))
-    
-    for inp in inputs:
-        tx_inputs += bytes.fromhex(inp['txid'])[::-1]  # txid little-endian
-        tx_inputs += inp['vout'].to_bytes(4, 'little')
-        tx_inputs += b'\x00'  # Empty scriptSig for SegWit
-        tx_inputs += sequence.to_bytes(4, 'little')
-    
-    # Serialize outputs
-    tx_outputs = b''
-    tx_outputs += encode_varint(len(outputs))
-    
-    for out in outputs:
-        tx_outputs += out['value'].to_bytes(8, 'little')
-        script = create_output_script(out['address'])
-        tx_outputs += encode_varint(len(script)) + script
-    
-    # Sign each input
-    witnesses = []
-    
-    for i, inp in enumerate(inputs):
-        if inp['is_segwit']:
-            # BIP143 sighash for SegWit
-            sighash = compute_sighash_bip143(
-                inputs, outputs, i, inp['value'],
-                wallet.pubkey_hash, version, sequence, locktime
-            )
-            
-            # Sign with SE050
-            signature = se050_sign(key_id, sighash)
-            
-            # Build witness
-            witness = b'\x02'  # 2 items
-            witness += encode_varint(len(signature) + 1)
-            witness += signature + b'\x01'  # SIGHASH_ALL
-            witness += encode_varint(len(wallet.pubkey_compressed))
-            witness += wallet.pubkey_compressed
-            
-            witnesses.append(witness)
-        else:
-            raise ValueError("RBF only supported for SegWit inputs currently")
-    
-    # Assemble final transaction
-    raw_tx = b''
-    raw_tx += version.to_bytes(4, 'little')
-    raw_tx += b'\x00\x01'  # SegWit marker and flag
-    raw_tx += tx_inputs[1:]  # Skip varint we added
-    raw_tx += encode_varint(len(inputs))
-    
-    # Re-add inputs properly
-    raw_tx = b''
-    raw_tx += version.to_bytes(4, 'little')
-    raw_tx += b'\x00\x01'  # SegWit marker
-    raw_tx += encode_varint(len(inputs))
-    
-    for inp in inputs:
-        raw_tx += bytes.fromhex(inp['txid'])[::-1]
-        raw_tx += inp['vout'].to_bytes(4, 'little')
-        raw_tx += b'\x00'  # Empty scriptSig
-        raw_tx += sequence.to_bytes(4, 'little')
-    
-    # Outputs
-    raw_tx += encode_varint(len(outputs))
-    for out in outputs:
-        raw_tx += out['value'].to_bytes(8, 'little')
-        script = create_output_script(out['address'])
-        raw_tx += encode_varint(len(script)) + script
-    
-    # Witnesses
-    for w in witnesses:
-        raw_tx += w
-    
-    # Locktime
-    raw_tx += locktime.to_bytes(4, 'little')
-    
-    # Calculate txid
-    tx_for_txid = b''
-    tx_for_txid += version.to_bytes(4, 'little')
-    tx_for_txid += encode_varint(len(inputs))
-    for inp in inputs:
-        tx_for_txid += bytes.fromhex(inp['txid'])[::-1]
-        tx_for_txid += inp['vout'].to_bytes(4, 'little')
-        tx_for_txid += b'\x00'
-        tx_for_txid += sequence.to_bytes(4, 'little')
-    tx_for_txid += encode_varint(len(outputs))
-    for out in outputs:
-        tx_for_txid += out['value'].to_bytes(8, 'little')
-        script = create_output_script(out['address'])
-        tx_for_txid += encode_varint(len(script)) + script
-    tx_for_txid += locktime.to_bytes(4, 'little')
-    
-    new_txid = sha256d(tx_for_txid)[::-1].hex()
-    
-    return raw_tx.hex(), new_txid
-
-
-def build_cpfp_transaction(
-    spendable_outputs: List[Dict],
-    child_fee: int,
-    wallet: 'Wallet',
-    key_id: str
-) -> Tuple[str, str]:
-    """
-    Build a CPFP (Child-Pays-For-Parent) transaction.
-    
-    Spends outputs from an unconfirmed parent to create a high-fee child
-    that incentivizes miners to confirm both transactions.
-    
-    Args:
-        spendable_outputs: List of UTXOs from parent tx that we control
-        child_fee: Fee for the child transaction in sats
-        wallet: Wallet instance
-        key_id: SE050 key ID
-    
-    Returns:
-        Tuple of (raw_tx_hex, txid)
-    """
-    if not spendable_outputs:
-        raise ValueError("No spendable outputs provided")
-    
-    # Calculate total input
-    total_input = sum(o['value'] for o in spendable_outputs)
-    
-    # Output goes back to our SegWit address
-    output_value = total_input - child_fee
-    
-    if output_value < 546:
-        raise ValueError(f"Output would be dust ({output_value} sats). Need more input value or lower fee.")
-    
-    output_address = wallet.addresses['segwit']
-    
-    # Build transaction
-    version = 2
-    sequence = 0xfffffffd  # RBF enabled for future bumps
-    locktime = 0
-    
-    inputs = []
-    for utxo in spendable_outputs:
-        inputs.append({
-            'txid': utxo['txid'],
-            'vout': utxo['vout'],
-            'value': utxo['value'],
-            'is_segwit': utxo['address'].startswith(('bc1', 'tb1'))
-        })
-    
-    outputs = [{'address': output_address, 'value': output_value}]
-    
-    # Sign each input
-    witnesses = []
-    
-    for i, inp in enumerate(inputs):
-        if inp['is_segwit']:
-            # BIP143 sighash
-            sighash = compute_sighash_bip143(
-                inputs, outputs, i, inp['value'],
-                wallet.pubkey_hash, version, sequence, locktime
-            )
-            
-            signature = se050_sign(key_id, sighash)
-            
-            witness = b'\x02'
-            witness += encode_varint(len(signature) + 1)
-            witness += signature + b'\x01'
-            witness += encode_varint(len(wallet.pubkey_compressed))
-            witness += wallet.pubkey_compressed
-            
-            witnesses.append(witness)
-        else:
-            raise ValueError("CPFP only supported for SegWit inputs")
-    
-    # Assemble transaction
-    raw_tx = b''
-    raw_tx += version.to_bytes(4, 'little')
-    raw_tx += b'\x00\x01'  # SegWit marker
-    raw_tx += encode_varint(len(inputs))
-    
-    for inp in inputs:
-        raw_tx += bytes.fromhex(inp['txid'])[::-1]
-        raw_tx += inp['vout'].to_bytes(4, 'little')
-        raw_tx += b'\x00'
-        raw_tx += sequence.to_bytes(4, 'little')
-    
-    raw_tx += encode_varint(len(outputs))
-    for out in outputs:
-        raw_tx += out['value'].to_bytes(8, 'little')
-        script = create_output_script(out['address'])
-        raw_tx += encode_varint(len(script)) + script
-    
-    for w in witnesses:
-        raw_tx += w
-    
-    raw_tx += locktime.to_bytes(4, 'little')
-    
-    # Calculate txid (without witness)
-    tx_for_txid = b''
-    tx_for_txid += version.to_bytes(4, 'little')
-    tx_for_txid += encode_varint(len(inputs))
-    for inp in inputs:
-        tx_for_txid += bytes.fromhex(inp['txid'])[::-1]
-        tx_for_txid += inp['vout'].to_bytes(4, 'little')
-        tx_for_txid += b'\x00'
-        tx_for_txid += sequence.to_bytes(4, 'little')
-    tx_for_txid += encode_varint(len(outputs))
-    for out in outputs:
-        tx_for_txid += out['value'].to_bytes(8, 'little')
-        script = create_output_script(out['address'])
-        tx_for_txid += encode_varint(len(script)) + script
-    tx_for_txid += locktime.to_bytes(4, 'little')
-    
-    txid = sha256d(tx_for_txid)[::-1].hex()
-    
-    return raw_tx.hex(), txid
-
-
-def compute_sighash_bip143(
-    inputs: List[Dict],
-    outputs: List[Dict],
-    input_index: int,
-    input_value: int,
-    pubkey_hash: bytes,
-    version: int = 2,
-    sequence: int = 0xfffffffd,
-    locktime: int = 0
-) -> bytes:
-    """
-    Compute BIP143 sighash for SegWit transaction signing.
-    """
-    # hashPrevouts
-    prevouts = b''
-    for inp in inputs:
-        prevouts += bytes.fromhex(inp['txid'])[::-1]
-        prevouts += inp['vout'].to_bytes(4, 'little')
-    hash_prevouts = sha256d(prevouts)
-    
-    # hashSequence
-    sequences = b''
-    for _ in inputs:
-        sequences += sequence.to_bytes(4, 'little')
-    hash_sequence = sha256d(sequences)
-    
-    # hashOutputs
-    outputs_data = b''
-    for out in outputs:
-        outputs_data += out['value'].to_bytes(8, 'little')
-        script = create_output_script(out['address'])
-        outputs_data += encode_varint(len(script)) + script
-    hash_outputs = sha256d(outputs_data)
-    
-    # scriptCode for P2WPKH
-    script_code = b'\x19\x76\xa9\x14' + pubkey_hash + b'\x88\xac'
-    
-    # Build preimage
-    inp = inputs[input_index]
-    preimage = b''
-    preimage += version.to_bytes(4, 'little')
-    preimage += hash_prevouts
-    preimage += hash_sequence
-    preimage += bytes.fromhex(inp['txid'])[::-1]
-    preimage += inp['vout'].to_bytes(4, 'little')
-    preimage += script_code
-    preimage += input_value.to_bytes(8, 'little')
-    preimage += sequence.to_bytes(4, 'little')
-    preimage += hash_outputs
-    preimage += locktime.to_bytes(4, 'little')
-    preimage += b'\x01\x00\x00\x00'  # SIGHASH_ALL
-    
-    return sha256(preimage)  # Single SHA256 - SE050 does the second
-
 
 # ============================================================================
 #                              CLI COMMANDS

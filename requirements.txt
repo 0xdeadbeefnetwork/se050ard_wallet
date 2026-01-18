@@ -1,0 +1,16 @@
+# SE050ARD Bitcoin Wallet - Python Dependencies
+#
+# Install with: pip3 install -r requirements.txt
+
+# BIP39 mnemonic generation
+mnemonic>=0.20
+
+# QR code generation (optional, for GUI)
+qrcode>=7.3
+pillow>=9.0
+
+# HTTP requests for blockchain API (optional, stdlib urllib works too)
+requests>=2.25
+
+# Note: tkinter is required for GUI but comes with Python on most systems
+# If missing: sudo apt install python3-tk
