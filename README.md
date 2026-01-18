@@ -440,7 +440,29 @@ Default keys are published - anyone with physical access and knowledge of your S
 
 ⚠️ **WARNING**: If you rotate keys and lose them, the SE050 is **permanently locked**. There is no recovery.
 
-#### How to Rotate Keys (Official NXP Method)
+#### Using SCP03 with ssscli (Easy Method)
+
+You can use SCP03 encryption with ssscli using a simple text file for keys (see [AN13027](https://www.nxp.com/docs/en/application-note/AN13027.pdf) Section 7.2.2):
+
+```bash
+# Create key file with default SE050E keys
+cat > ~/.se050-wallet/scp03.key << 'EOF'
+ENC D2DB63E7A0A5AED72A6460C4DFDCAF64
+MAC 738D5B798ED241B0B24768514BFBA95B
+DEK 6702DAC30942B2C85E7F47B42CED4E7F
+EOF
+chmod 600 ~/.se050-wallet/scp03.key
+
+# Set environment variable to use key file
+export EX_SSS_BOOT_SCP03_PATH=~/.se050-wallet/scp03.key
+
+# Connect with Platform SCP
+ssscli connect se05x t1oi2c none --auth_type PlatformSCP --scpkey ~/.se050-wallet/scp03.key
+ssscli se05x uid
+ssscli disconnect
+```
+
+#### How to Rotate Keys (Full Process)
 
 Key rotation uses NXP's `se05x_RotatePlatformSCP03Keys` demo from the Plug & Trust middleware (see [AN13013](https://www.nxp.com/docs/en/application-note/AN13013.pdf) Section 4.2).
 
@@ -540,7 +562,8 @@ To reverse (allow plain communication again):
 ```
 
 **References:**
-- [AN13013: Get started with EdgeLock SE05x](https://www.nxp.com/docs/en/application-note/AN13013.pdf) - Section 4.2
+- [AN13027: Quick start guide with i.MX 8M](https://www.nxp.com/docs/en/application-note/AN13027.pdf) - Section 7.2.2 (text file keys)
+- [AN13013: Get started with EdgeLock SE05x](https://www.nxp.com/docs/en/application-note/AN13013.pdf) - Section 4.2 (key rotation)
 - [NXP Community: Key rotation bug fix](https://community.nxp.com/t5/Secure-Authentication/SE050-key-rotation-demo-nxScp03-GP-InitializeUpdate-returns/td-p/1191062) (requires v02.12.01+)
 
 ---
